@@ -151,6 +151,10 @@ export function applySettingsFromUrl(host: SettingsHost) {
 export function setTab(host: SettingsHost, next: Tab) {
   if (host.tab !== next) {
     host.tab = next;
+  } else {
+    // Tab is already set to the target — force Lit to re-render in case the
+    // rendered content fell out of sync (e.g. after a failed update cycle).
+    (host as { requestUpdate?: () => void }).requestUpdate?.();
   }
   if (next === "chat") {
     host.chatHasAutoScrolled = false;
@@ -386,6 +390,12 @@ export function syncUrlWithTab(host: SettingsHost, tab: Tab, replace: boolean) {
 
   if (currentPath !== targetPath) {
     url.pathname = targetPath;
+  }
+
+  // Skip history manipulation when the URL is already correct to avoid
+  // duplicate history entries that confuse back/forward navigation.
+  if (url.toString() === window.location.href) {
+    return;
   }
 
   if (replace) {

@@ -6,7 +6,7 @@ import { defaultRuntime } from "../runtime.js";
 import { isErrno } from "./errors.js";
 import { formatPortDiagnostics } from "./ports-format.js";
 import { inspectPortUsage } from "./ports-inspect.js";
-import { tryListenOnPort } from "./ports-probe.js";
+import { checkPortInUse } from "./ports-probe.js";
 import type {
   PortConnection,
   PortConnections,
@@ -38,13 +38,12 @@ export async function describePortOwner(port: number): Promise<string | undefine
 
 export async function ensurePortAvailable(port: number): Promise<void> {
   // Detect EADDRINUSE early with a friendly message.
-  try {
-    await tryListenOnPort({ port });
-  } catch (err) {
-    if (isErrno(err) && err.code === "EADDRINUSE") {
-      throw new PortInUseError(port);
-    }
-    throw err;
+  const status = await checkPortInUse(port);
+  if (status === "busy") {
+    throw new PortInUseError(port);
+  }
+  if (status === "unknown") {
+    throw new Error(`Unable to determine whether port ${port} is available.`);
   }
 }
 

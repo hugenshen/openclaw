@@ -78,6 +78,17 @@ describe("ports helpers", () => {
     });
   });
 
+  it("ensurePortAvailable rejects when an IPv4-only listener owns the port", async () => {
+    const server = net.createServer();
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const port = (server.address() as net.AddressInfo).port;
+    try {
+      await expect(ensurePortAvailable(port)).rejects.toBeInstanceOf(PortInUseError);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
   it("handlePortError exits nicely on EADDRINUSE", async () => {
     const runtime = {
       error: vi.fn(),

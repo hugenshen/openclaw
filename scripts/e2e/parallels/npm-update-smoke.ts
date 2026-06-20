@@ -1,7 +1,7 @@
 #!/usr/bin/env -S pnpm tsx
+import { spawn } from "node:child_process";
 // Npm Update Smoke script supports OpenClaw repository automation.
 import { randomUUID } from "node:crypto";
-import { spawn } from "node:child_process";
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { copyFile, readFile, rm } from "node:fs/promises";
 import path from "node:path";
@@ -439,6 +439,39 @@ function parseOpenClawPackageSpecVersion(spec: string): string {
   return resolveOpenClawRegistryVersion(value) || "";
 }
 
+function readString(value: unknown): string {
+  return typeof value === "string" ? value : "";
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+export function parseRegistryPackageMetadata(raw: string): {
+  gitHead: string;
+  tarball: string;
+  version: string;
+} {
+  const value = raw.trim();
+  if (!value) {
+    return { gitHead: "", tarball: "", version: "" };
+  }
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!isRecord(parsed)) {
+      return { gitHead: "", tarball: "", version: "" };
+    }
+    const dist = isRecord(parsed.dist) ? parsed.dist : {};
+    return {
+      gitHead: readString(parsed.gitHead),
+      tarball: readString(parsed["dist.tarball"]) || readString(dist.tarball),
+      version: readString(parsed.version),
+    };
+  } catch {
+    return { gitHead: "", tarball: "", version: "" };
+  }
+}
+
 export class NpmUpdateSmoke {
   private auth: ProviderAuth;
   private windowsAuth: ProviderAuth;
@@ -773,20 +806,7 @@ export class NpmUpdateSmoke {
     if (!output) {
       return { gitHead: "", tarball: "", version: "" };
     }
-    try {
-      const parsed = JSON.parse(output) as {
-        dist?: { tarball?: string };
-        gitHead?: string;
-        version?: string;
-      };
-      return {
-        gitHead: parsed.gitHead ?? "",
-        tarball: parsed.dist?.tarball ?? "",
-        version: parsed.version ?? "",
-      };
-    } catch {
-      return { gitHead: "", tarball: "", version: "" };
-    }
+    return parseRegistryPackageMetadata(output);
   }
 
   private async runSameGuestUpdates(): Promise<void> {
@@ -1109,23 +1129,32 @@ export class NpmUpdateSmoke {
     if (write.status !== 0) {
       throw new Error(`failed to write guest script ${scriptPath}: ${write.stderr.trim()}`);
     }
-    const chmod = run("prlctl", ["exec", vm, "/bin/chmod", "755", scriptPath], {
-      check: false,
-      quiet: true,
-      timeoutMs: 30_000,
-    });
-    if (chmod.status !== 0) {
-      throw new Error(`failed to chmod guest script ${scriptPath}: ${chmod.stderr.trim()}`);
+    try {
+      const chmod = run("prlctl", ["exec", vm, "/bin/chmod", "755", scriptPath], {
+        check: false,
+        quiet: true,
+        timeoutMs: 30_000,
+      });
+      if (chmod.status !== 0) {
+        throw new Error(`failed to chmod guest script ${scriptPath}: ${chmod.stderr.trim()}`);
+      }
+    } catch (error) {
+      this.removeGuestScript(vm, scriptPath);
+      throw error;
     }
     return scriptPath;
   }
 
   private removeGuestScript(vm: string, scriptPath: string): void {
-    run("prlctl", ["exec", vm, "/bin/rm", "-f", scriptPath], {
-      check: false,
-      quiet: true,
-      timeoutMs: 30_000,
-    });
+    try {
+      run("prlctl", ["exec", vm, "/bin/rm", "-f", scriptPath], {
+        check: false,
+        quiet: true,
+        timeoutMs: 30_000,
+      });
+    } catch {
+      // Cleanup must not hide the update failure that made the log useful.
+    }
   }
 
   private async runStreamingToJobLog(
@@ -1181,6 +1210,7 @@ export class NpmUpdateSmoke {
 
       child.on("error", (error) => {
         ctx.signal.removeEventListener("abort", abort);
+        clearTimeout(timer);
         if (killTimer) {
           clearTimeout(killTimer);
         }

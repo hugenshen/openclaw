@@ -17,6 +17,8 @@ const FULL_RELEASE_VALIDATION_WORKFLOW = ".github/workflows/full-release-validat
 const QA_LIVE_TRANSPORTS_WORKFLOW = ".github/workflows/qa-live-transports-convex.yml";
 const UPDATE_MIGRATION_WORKFLOW = ".github/workflows/update-migration.yml";
 const CI_CHECK_TESTBOX_WORKFLOW = ".github/workflows/ci-check-testbox.yml";
+const CI_CHECK_ARM_TESTBOX_WORKFLOW = ".github/workflows/ci-check-arm-testbox.yml";
+const CI_BUILD_ARTIFACTS_TESTBOX_WORKFLOW = ".github/workflows/ci-build-artifacts-testbox.yml";
 const CRABBOX_HYDRATE_WORKFLOW = ".github/workflows/crabbox-hydrate.yml";
 const CRABBOX_CONFIG = ".crabbox.yaml";
 const SCHEDULED_LIVE_CHECKS_WORKFLOW = ".github/workflows/openclaw-scheduled-live-checks.yml";
@@ -119,9 +121,17 @@ describe("package acceptance workflow", () => {
     expect(workflow).toContain('evidence_checksum_asset="${evidence_asset}.sha256"');
     expect(workflow).toContain('--pattern "$evidence_checksum_asset"');
     expect(workflow).toContain('fallback_package_version="${BASH_REMATCH[1]}"');
+    expect(workflow).toContain('tag_package_content="$RUNNER_TEMP/tag-package-content.b64"');
+    expect(workflow).toContain('gh api "repos/$GITHUB_REPOSITORY/contents/package.json?ref=$tag"');
+    expect(workflow).toContain("for attempt in 1 2 3; do");
+    expect(workflow).toContain("sleep $((attempt * 5))");
     expect(workflow).toContain(
-      'tag_package_version="$(gh api "repos/$GITHUB_REPOSITORY/contents/package.json?ref=$tag"',
+      "Stable closeout could not read package.json for $tag from GitHub API.",
     );
+    expect(workflow).toContain(
+      "Stable closeout package.json content for $tag was not valid base64.",
+    );
+    expect(workflow).toContain('tag_package_version="$(jq -r');
     expect(workflow).toContain('evidence_source_tag="v$fallback_package_version"');
     expect(workflow).toContain('gh release download "$evidence_source_tag"');
     expect(workflow).toContain("Checkout fallback evidence tag");
@@ -791,7 +801,7 @@ describe("package artifact reuse", () => {
       "OPENCLAW_LIVE_GATEWAY_MODELS=google/gemini-3.1-pro-preview node .release-harness/scripts/test-live-shard.mjs native-live-src-gateway-profiles",
     );
     expect(workflow).toContain(
-      "OPENCLAW_LIVE_GATEWAY_MODELS=minimax/MiniMax-M3,minimax-portal/MiniMax-M3 OPENCLAW_LIVE_GATEWAY_MAX_MODELS=2",
+      "OPENCLAW_LIVE_GATEWAY_MODELS=minimax/MiniMax-M2.7,minimax-portal/MiniMax-M2.7 OPENCLAW_LIVE_GATEWAY_MAX_MODELS=2",
     );
     expect(workflow).toMatch(
       /suite_id: native-live-src-gateway-profiles-fireworks[\s\S]*?timeout_minutes: 30[\s\S]*?advisory: true/u,
@@ -895,6 +905,9 @@ describe("package artifact reuse", () => {
       "command: OPENCLAW_LIVE_GATEWAY_THINKING=off OPENCLAW_LIVE_GATEWAY_PROVIDERS=openai OPENCLAW_LIVE_GATEWAY_MODELS=openai/gpt-5.5 OPENCLAW_LIVE_GATEWAY_MAX_MODELS=1",
     );
     expect(workflow).toContain(
+      "command: OPENCLAW_LIVE_GATEWAY_PROVIDERS=minimax,minimax-portal OPENCLAW_LIVE_GATEWAY_MODELS=minimax/MiniMax-M2.7,minimax-portal/MiniMax-M2.7 OPENCLAW_LIVE_GATEWAY_MAX_MODELS=2",
+    );
+    expect(workflow).toContain(
       'command: OPENCLAW_LIVE_DOCKER_REPO_ROOT="$GITHUB_WORKSPACE" timeout --foreground --kill-after=30s 45m bash .release-harness/scripts/test-live-cli-backend-docker.sh',
     );
     expect(workflow).toContain(
@@ -996,7 +1009,10 @@ describe("package artifact reuse", () => {
       "OPENCLAW_LIVE_CLI_BACKEND_DOCKER_RUN_TIMEOUT:-2700s",
     );
     expect(readFileSync("scripts/test-live-cli-backend-docker.sh", "utf8")).toContain(
-      'timeout_value="${OPENCLAW_LIVE_CLI_BACKEND_SETUP_TIMEOUT_SECONDS:-180}s"',
+      'CLI_SETUP_TIMEOUT_SECONDS="$(openclaw_live_read_positive_int_env OPENCLAW_LIVE_CLI_BACKEND_SETUP_TIMEOUT_SECONDS 180)"',
+    );
+    expect(readFileSync("scripts/test-live-cli-backend-docker.sh", "utf8")).toContain(
+      'timeout_value="${OPENCLAW_LIVE_CLI_BACKEND_SETUP_TIMEOUT_SECONDS:?missing live CLI backend setup timeout seconds}s"',
     );
     expect(readFileSync("scripts/test-live-cli-backend-docker.sh", "utf8")).toContain(
       'echo "timeout command not found; cannot bound live CLI backend setup after ${timeout_value}"',
@@ -1005,10 +1021,13 @@ describe("package artifact reuse", () => {
       "OPENCLAW_LIVE_ACP_BIND_DOCKER_RUN_TIMEOUT:-2700s",
     );
     expect(readFileSync("scripts/test-live-acp-bind-docker.sh", "utf8")).toContain(
-      "OPENCLAW_LIVE_ACP_BIND_SETUP_TIMEOUT_SECONDS:-180",
+      'ACP_SETUP_TIMEOUT_SECONDS="$(openclaw_live_read_positive_int_env OPENCLAW_LIVE_ACP_BIND_SETUP_TIMEOUT_SECONDS 180)"',
     );
     expect(readFileSync("scripts/test-live-acp-bind-docker.sh", "utf8")).toContain(
-      'timeout_value="${OPENCLAW_LIVE_ACP_BIND_SETUP_TIMEOUT_SECONDS:-180}s"',
+      'timeout_value="${OPENCLAW_LIVE_ACP_BIND_SETUP_TIMEOUT_SECONDS:?missing live ACP bind setup timeout seconds}s"',
+    );
+    expect(readFileSync("scripts/test-live-acp-bind-docker.sh", "utf8")).toContain(
+      '-e OPENCLAW_LIVE_ACP_BIND_SETUP_TIMEOUT_SECONDS="$ACP_SETUP_TIMEOUT_SECONDS"',
     );
     expect(readFileSync("scripts/test-live-acp-bind-docker.sh", "utf8")).toContain(
       'echo "timeout command not found; cannot bound live ACP bind setup after ${timeout_value}"',
@@ -1023,10 +1042,13 @@ describe("package artifact reuse", () => {
       "OPENCLAW_LIVE_CODEX_HARNESS_DOCKER_RUN_TIMEOUT:-2100s",
     );
     expect(readFileSync("scripts/test-live-codex-harness-docker.sh", "utf8")).toContain(
-      "OPENCLAW_LIVE_CODEX_HARNESS_SETUP_TIMEOUT_SECONDS:-180",
+      'CODEX_HARNESS_SETUP_TIMEOUT_SECONDS="$(openclaw_live_read_positive_int_env OPENCLAW_LIVE_CODEX_HARNESS_SETUP_TIMEOUT_SECONDS 180)"',
     );
     expect(readFileSync("scripts/test-live-codex-harness-docker.sh", "utf8")).toContain(
-      'timeout_value="${OPENCLAW_LIVE_CODEX_HARNESS_SETUP_TIMEOUT_SECONDS:-180}s"',
+      'timeout_value="${OPENCLAW_LIVE_CODEX_HARNESS_SETUP_TIMEOUT_SECONDS:?missing live Codex harness setup timeout seconds}s"',
+    );
+    expect(readFileSync("scripts/test-live-codex-harness-docker.sh", "utf8")).toContain(
+      '-e OPENCLAW_LIVE_CODEX_HARNESS_SETUP_TIMEOUT_SECONDS="$CODEX_HARNESS_SETUP_TIMEOUT_SECONDS"',
     );
     expect(readFileSync("scripts/test-live-codex-harness-docker.sh", "utf8")).toContain(
       'echo "timeout command not found; cannot bound live Codex harness setup after ${timeout_value}"',
@@ -1080,6 +1102,72 @@ describe("package artifact reuse", () => {
     const dockerPlanAction = readFileSync(DOCKER_E2E_PLAN_ACTION, "utf8");
     const hydrateScript = readFileSync(CI_HYDRATE_LIVE_AUTH_SCRIPT, "utf8");
     const providerVerifier = readFileSync(VERIFY_PROVIDER_SECRETS_SCRIPT, "utf8");
+    const testboxProviderSecretKeys = [
+      "OPENAI_API_KEY",
+      "OPENAI_BASE_URL",
+      "ANTHROPIC_API_KEY",
+      "ANTHROPIC_API_KEY_OLD",
+      "ANTHROPIC_API_TOKEN",
+      "FACTORY_API_KEY",
+      "BYTEPLUS_API_KEY",
+      "CEREBRAS_API_KEY",
+      "DEEPINFRA_API_KEY",
+      "DASHSCOPE_API_KEY",
+      "GROQ_API_KEY",
+      "KIMI_API_KEY",
+      "MODELSTUDIO_API_KEY",
+      "MOONSHOT_API_KEY",
+      "MISTRAL_API_KEY",
+      "MINIMAX_API_KEY",
+      "OPENCODE_API_KEY",
+      "OPENCODE_ZEN_API_KEY",
+      "OPENCLAW_LIVE_BROWSER_CDP_URL",
+      "OPENCLAW_LIVE_SETUP_TOKEN",
+      "OPENCLAW_LIVE_SETUP_TOKEN_MODEL",
+      "OPENCLAW_LIVE_SETUP_TOKEN_PROFILE",
+      "OPENCLAW_LIVE_SETUP_TOKEN_VALUE",
+      "GEMINI_API_KEY",
+      "GOOGLE_API_KEY",
+      "OPENROUTER_API_KEY",
+      "QWEN_API_KEY",
+      "FAL_KEY",
+      "RUNWAY_API_KEY",
+      "DEEPGRAM_API_KEY",
+      "TOGETHER_API_KEY",
+      "VYDRA_API_KEY",
+      "XAI_API_KEY",
+      "ZAI_API_KEY",
+      "Z_AI_API_KEY",
+      "BYTEPLUS_ACCESS_KEY_ID",
+      "BYTEPLUS_SECRET_ACCESS_KEY",
+      "CLAUDE_CODE_OAUTH_TOKEN",
+      "OPENCLAW_CODEX_AUTH_JSON",
+      "OPENCLAW_CODEX_CONFIG_TOML",
+      "OPENCLAW_CLAUDE_JSON",
+      "OPENCLAW_CLAUDE_CREDENTIALS_JSON",
+      "OPENCLAW_CLAUDE_SETTINGS_JSON",
+      "OPENCLAW_CLAUDE_SETTINGS_LOCAL_JSON",
+      "OPENCLAW_GEMINI_SETTINGS_JSON",
+      "FIREWORKS_API_KEY",
+    ];
+    const githubBackedTestboxProviderSteps = [
+      workflowStep(
+        workflowJob(CI_CHECK_TESTBOX_WORKFLOW, "check"),
+        "Hydrate Testbox provider env helper",
+      ),
+      workflowStep(
+        workflowJob(CI_CHECK_ARM_TESTBOX_WORKFLOW, "check-arm"),
+        "Hydrate Testbox provider env helper",
+      ),
+      workflowStep(
+        workflowJob(CI_BUILD_ARTIFACTS_TESTBOX_WORKFLOW, "build-artifacts"),
+        "Hydrate Testbox provider env helper",
+      ),
+      workflowStep(
+        workflowJob(CRABBOX_HYDRATE_WORKFLOW, "hydrate-github"),
+        "Hydrate provider env helper",
+      ),
+    ];
 
     expect(hydrateScript).toContain("  FACTORY_API_KEY \\");
     expect(providerVerifier).toContain('url: "https://api.anthropic.com/v1/messages"');
@@ -1109,6 +1197,11 @@ describe("package artifact reuse", () => {
       testboxWorkflow,
     ]) {
       expect(workflow).toContain("FACTORY_API_KEY: ${{ secrets.FACTORY_API_KEY }}");
+    }
+    for (const step of githubBackedTestboxProviderSteps) {
+      for (const key of testboxProviderSecretKeys) {
+        expect(step.env?.[key]).toBe("${{ secrets." + key + " }}");
+      }
     }
     expect(reusableWorkflow).toContain("FACTORY_API_KEY:\n        required: false");
     expect(packageAcceptanceWorkflow).toContain("FACTORY_API_KEY:\n        required: false");

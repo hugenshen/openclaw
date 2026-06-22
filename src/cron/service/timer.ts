@@ -950,6 +950,16 @@ export function applyJobResult(
           context: "completion",
         });
       } else {
+        if (job.schedule.kind === "every" && naturalNext === undefined) {
+          state.deps.log.warn(
+            {
+              jobId: job.id,
+              jobName: job.name,
+              scheduleKind: job.schedule.kind,
+            },
+            "cron: next run unresolved after successful completion; clearing schedule",
+          );
+        }
         job.state.nextRunAtMs = naturalNext;
       }
     } else {

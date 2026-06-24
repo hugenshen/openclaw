@@ -3,7 +3,11 @@
  * Exercises raw error coercion, remediation hints, timeout/auth/billing/rate-limit cases.
  */
 import { describe, expect, it } from "vitest";
-import { classifyFailoverSignal } from "./embedded-agent-helpers/errors.js";
+import {
+  classifyAssistantFailoverReason,
+  classifyFailoverSignal,
+  isFailoverAssistantError,
+} from "./embedded-agent-helpers/errors.js";
 import {
   buildFailoverRemediationHint,
   buildProviderReauthCommand,
@@ -17,6 +21,7 @@ import {
   resolveFailoverStatus,
 } from "./failover-error.js";
 import { SessionWriteLockTimeoutError } from "./session-write-lock-error.js";
+import { makeAssistantMessageFixture } from "./test-helpers/assistant-message-fixtures.js";
 
 // OpenAI 429 example shape: https://help.openai.com/en/articles/5955604-how-can-i-solve-429-too-many-requests-errors
 const OPENAI_RATE_LIMIT_MESSAGE =
@@ -1465,5 +1470,22 @@ describe("upstream_error type triggers fallback", () => {
         message: '{"type":"api_error","message":"upstream_error: backend unavailable"}',
       }),
     ).toEqual({ kind: "reason", reason: "timeout" });
+  });
+
+  it("treats an upstream_error assistant message as fallbackable at the production gate", () => {
+    // The #95519 runtime path: the provider error surfaces as an assistant message with
+    // stopReason "error" and errorType "upstream_error" (no leading HTTP status, so HTTP-status
+    // classification does not apply). run.ts assistant-stage failover calls these exact
+    // functions (isFailoverAssistantError / classifyAssistantFailoverReason); before this fix
+    // both reported "not a failover error", so the run returned an error payload instead of
+    // throwing a FailoverError into the configured fallback chain.
+    const assistant = makeAssistantMessageFixture({
+      stopReason: "error",
+      provider: "demo-provider",
+      errorType: "upstream_error",
+      errorMessage: "Upstream request failed",
+    });
+    expect(classifyAssistantFailoverReason(assistant)).toBe("timeout");
+    expect(isFailoverAssistantError(assistant)).toBe(true);
   });
 });

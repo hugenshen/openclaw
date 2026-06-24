@@ -428,6 +428,34 @@ function resolveCronNextRunWithLowerBound(params: {
   return Math.max(params.naturalNext, params.lowerBoundMs);
 }
 
+function resolveEveryNextRunAtMs(params: {
+  state: CronServiceState;
+  job: CronJob;
+  naturalNext: number | undefined;
+  lowerBoundMs?: number;
+  context: "completion" | "error_backoff";
+}): number | undefined {
+  if (params.naturalNext === undefined) {
+    const message =
+      params.context === "completion"
+        ? "cron: next run unresolved after successful completion; clearing schedule"
+        : "cron: next run unresolved during transient error retry; clearing schedule";
+    params.state.deps.log.warn(
+      {
+        jobId: params.job.id,
+        jobName: params.job.name,
+        scheduleKind: params.job.schedule.kind,
+      },
+      message,
+    );
+    return undefined;
+  }
+  if (params.lowerBoundMs !== undefined) {
+    return Math.max(params.naturalNext, params.lowerBoundMs);
+  }
+  return params.naturalNext;
+}
+
 function resolveRetryConfig(cronConfig?: CronConfig) {
   const retry = cronConfig?.retry;
   return {
@@ -909,9 +937,17 @@ export function applyJobResult(
               lowerBoundMs: backoffNext,
               context: "error_backoff",
             })
-          : normalNext !== undefined
-            ? Math.max(normalNext, backoffNext)
-            : backoffNext;
+          : job.schedule.kind === "every"
+            ? resolveEveryNextRunAtMs({
+                state,
+                job,
+                naturalNext: normalNext,
+                lowerBoundMs: backoffNext,
+                context: "error_backoff",
+              })
+            : normalNext !== undefined
+              ? Math.max(normalNext, backoffNext)
+              : backoffNext;
       state.deps.log.info(
         {
           jobId: job.id,
@@ -947,6 +983,13 @@ export function applyJobResult(
           job,
           naturalNext,
           lowerBoundMs: minNext,
+          context: "completion",
+        });
+      } else if (job.schedule.kind === "every") {
+        job.state.nextRunAtMs = resolveEveryNextRunAtMs({
+          state,
+          job,
+          naturalNext,
           context: "completion",
         });
       } else {

@@ -14,6 +14,7 @@ import { resolveApiKeyForProvider } from "openclaw/plugin-sdk/provider-auth-runt
 import {
   assertOkOrThrowHttpError,
   postJsonRequest,
+  readProviderJsonResponse,
   resolveProviderHttpRequestConfig,
 } from "openclaw/plugin-sdk/provider-http";
 import { isRecord, normalizeOptionalString } from "openclaw/plugin-sdk/string-coerce-runtime";
@@ -326,7 +327,7 @@ export function buildOpenRouterImageGenerationProvider(): ImageGenerationProvide
 
       try {
         await assertOkOrThrowHttpError(response, "OpenRouter image generation failed");
-        const payload = await response.json();
+        const payload = await readProviderJsonResponse(response, "openrouter.image-generation");
         const images = extractOpenRouterImagesFromResponse(payload, {
           malformedResponseError: OPENROUTER_IMAGE_MALFORMED_RESPONSE,
         });

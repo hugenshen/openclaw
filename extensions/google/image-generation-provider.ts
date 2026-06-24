@@ -10,6 +10,7 @@ import { resolveApiKeyForProvider } from "openclaw/plugin-sdk/provider-auth-runt
 import {
   assertOkOrThrowHttpError,
   postJsonRequest,
+  readProviderJsonResponse,
   sanitizeConfiguredModelProviderRequest,
 } from "openclaw/plugin-sdk/provider-http";
 import {
@@ -231,7 +232,7 @@ export function buildGoogleImageGenerationProvider(): ImageGenerationProvider {
       try {
         await assertOkOrThrowHttpError(res, "Google image generation failed");
 
-        const payload = await res.json();
+        const payload = await readProviderJsonResponse(res, "google.image-generation");
         let imageIndex = 0;
         const images: GeneratedImageAsset[] = [];
         for (const part of googleResponseParts(payload)) {

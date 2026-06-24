@@ -13,6 +13,7 @@ export const PARALLEL_MCP_SEARCH_URL = "https://search.parallel.ai/mcp";
 const MCP_PROTOCOL_VERSION = "2025-06-18";
 const MCP_TIMEOUT_SECONDS = 30;
 const PARALLEL_MCP_ERROR_BODY_LIMIT_BYTES = 8 * 1024;
+const PARALLEL_MCP_SUCCESS_BODY_LIMIT_BYTES = 16 * 1024 * 1024;
 
 const require = createRequire(import.meta.url);
 const PLUGIN_VERSION = readPluginPackageVersion({ require });
@@ -218,7 +219,7 @@ async function postMcp(params: {
       status: response.status,
       statusText: response.statusText,
       text: response.ok
-        ? await response.text()
+        ? await readResponseTextLimited(response, PARALLEL_MCP_SUCCESS_BODY_LIMIT_BYTES)
         : await readResponseTextLimited(response, PARALLEL_MCP_ERROR_BODY_LIMIT_BYTES),
       sessionIdHeader: response.headers.get("mcp-session-id"),
     }),

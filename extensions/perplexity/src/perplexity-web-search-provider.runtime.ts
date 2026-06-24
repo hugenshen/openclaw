@@ -24,6 +24,7 @@ import {
   wrapWebContent,
   writeCachedSearchPayload,
 } from "openclaw/plugin-sdk/provider-web-search";
+import { readResponseWithLimit } from "openclaw/plugin-sdk/response-limit-runtime";
 import { normalizeOptionalString, uniqueStrings } from "openclaw/plugin-sdk/string-coerce-runtime";
 import {
   DEFAULT_PERPLEXITY_BASE_URL,
@@ -35,6 +36,10 @@ import {
 
 const PERPLEXITY_SEARCH_ENDPOINT = "https://api.perplexity.ai/search";
 const DEFAULT_PERPLEXITY_MODEL = "perplexity/sonar-pro";
+// Perplexity search responses are external bodies. Cap the success JSON at
+// 16 MiB (same limit as other bundled web-search providers) so a misbehaving
+// or hostile endpoint cannot stream an unbounded body into memory.
+const PERPLEXITY_SEARCH_JSON_MAX_BYTES = 16 * 1024 * 1024;
 
 type PerplexityConfig = {
   apiKey?: string;
@@ -141,9 +146,18 @@ function buildPerplexityRequestHeaders(apiKey: string, acceptJson = false): Reco
   };
 }
 
-async function readPerplexityJsonResponse<T>(response: Response, label: string): Promise<T> {
+async function readPerplexityJsonResponse<T>(
+  response: Response,
+  label: string,
+  opts?: { maxBytes?: number },
+): Promise<T> {
+  const maxBytes = opts?.maxBytes ?? PERPLEXITY_SEARCH_JSON_MAX_BYTES;
+  const bytes = await readResponseWithLimit(response, maxBytes, {
+    onOverflow: ({ maxBytes: maxBytesLocal }) =>
+      new Error(`${label}: JSON response exceeds ${maxBytesLocal} bytes`),
+  });
   try {
-    return (await response.json()) as T;
+    return JSON.parse(new TextDecoder().decode(bytes)) as T;
   } catch (cause) {
     throw new Error(`${label}: malformed JSON response`, { cause });
   }

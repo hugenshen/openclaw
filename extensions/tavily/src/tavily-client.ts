@@ -8,6 +8,7 @@ import {
   resolveCacheTtlMs,
   writeCache,
 } from "openclaw/plugin-sdk/provider-web-search";
+import { readResponseWithLimit } from "openclaw/plugin-sdk/response-limit-runtime";
 import { wrapExternalContent, wrapWebContent } from "openclaw/plugin-sdk/security-runtime";
 import {
   DEFAULT_TAVILY_BASE_URL,
@@ -16,6 +17,11 @@ import {
   resolveTavilyExtractTimeoutSeconds,
   resolveTavilySearchTimeoutSeconds,
 } from "./config.js";
+
+// Tavily search and extract responses are external bodies. Cap the success
+// JSON at 16 MiB so a misbehaving or hostile endpoint cannot stream an
+// unbounded body into memory.
+const TAVILY_SEARCH_JSON_MAX_BYTES = 16 * 1024 * 1024;
 
 const SEARCH_CACHE = new Map<
   string,
@@ -90,9 +96,15 @@ async function postTavilyJson(params: {
 async function readTavilyJsonResponse(
   response: Response,
   label: string,
+  opts?: { maxBytes?: number },
 ): Promise<Record<string, unknown>> {
+  const maxBytes = opts?.maxBytes ?? TAVILY_SEARCH_JSON_MAX_BYTES;
+  const bytes = await readResponseWithLimit(response, maxBytes, {
+    onOverflow: ({ maxBytes: maxBytesLocal }) =>
+      new Error(`${label}: JSON response exceeds ${maxBytesLocal} bytes`),
+  });
   try {
-    return (await response.json()) as Record<string, unknown>;
+    return JSON.parse(new TextDecoder().decode(bytes)) as Record<string, unknown>;
   } catch (cause) {
     throw new Error(`${label}: malformed JSON response`, { cause });
   }

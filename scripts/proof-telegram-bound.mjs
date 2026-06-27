@@ -1,12 +1,9 @@
 import { once } from "node:events";
 // Proof script: verifies readResponseWithLimit stops Telegram Bot API response reads at the cap.
 import { createServer } from "node:http";
-import { resolve, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
+import { resolve } from "node:path";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-const pkgRoot = resolve(__dirname, "..");
+const pkgRoot = resolve(import.meta.dirname, "..");
 
 const { readResponseWithLimit } = await import(
   `${pkgRoot}/packages/media-core/src/read-response-with-limit.ts`
@@ -18,7 +15,9 @@ const STREAM_SIZE = 24 * 1024 * 1024; // 24 MiB – simulates hostile oversized 
 let allPassed = true;
 function check(label, val) {
   console.log(`  ${val ? "ok" : "FAIL"}: ${label}`);
-  if (!val) allPassed = false;
+  if (!val) {
+    allPassed = false;
+  }
 }
 
 // Server-side byte counter: track how many response bytes were actually written to the socket.
@@ -77,7 +76,9 @@ async function withServer(fn) {
   try {
     await fn(port, server);
   } finally {
-    await new Promise((resolve) => server.close(resolve));
+    await new Promise((resolveDone) => {
+      server.close(resolveDone);
+    });
   }
 }
 
@@ -95,12 +96,14 @@ await withServer(async (port) => {
     err = e;
   }
   // Give server a tick to flush its internal counter before checking
-  await new Promise((r) => setTimeout(r, 50));
+  await new Promise((done) => {
+    setTimeout(done, 50);
+  });
   const sent = serverBytesWritten;
-  check(`oversized body rejected (threw=${!!err})`, !!err);
+  check(`oversized body rejected (threw=${err != null})`, err != null);
   check(
     `error message contains limit info: "${err?.message?.slice(0, 80)}"`,
-    !!err?.message?.includes("limit"),
+    err?.message?.includes("limit") === true,
   );
   check(
     `server wrote ≈${sent} bytes, well below 24 MiB (stream was cancelled early)`,
@@ -112,8 +115,10 @@ await withServer(async (port) => {
 await withServer(async (port) => {
   serverBytesWritten = 0;
   const res2 = await fetch(`http://127.0.0.1:${port}/huge`);
-  await res2.json().catch(() => {});
-  await new Promise((r) => setTimeout(r, 50));
+  await res2.json().catch(() => undefined);
+  await new Promise((done) => {
+    setTimeout(done, 50);
+  });
   const sent2 = serverBytesWritten;
   check(
     `negative control: unbounded .json() caused server to write ≈${sent2} bytes (>> ${CAP})`,

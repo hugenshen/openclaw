@@ -64,6 +64,7 @@ vi.mock("openclaw/plugin-sdk/provider-http", () => ({
   assertOkOrThrowHttpError: assertOkOrThrowHttpErrorMock,
   postJsonRequest: postJsonRequestMock,
   postMultipartRequest: postMultipartRequestMock,
+  readProviderJsonResponse: async (response: Response) => response.json(),
   resolveProviderHttpRequestConfig: resolveProviderHttpRequestConfigMock,
   sanitizeConfiguredModelProviderRequest: sanitizeConfiguredModelProviderRequestMock,
 }));

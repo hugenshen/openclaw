@@ -406,6 +406,125 @@ describe("provider auth profile helpers", () => {
     expect(canceled).toBe(true);
   });
 
+  it("bounds oversized Copilot token success body over HTTP transport", async () => {
+    vi.resetModules();
+
+    const http = await import("node:http");
+    const { once } = await import("node:events");
+    const MiB = 1024 * 1024;
+    let bytesWritten = 0;
+
+    const server = http.createServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      const chunk = Buffer.alloc(MiB, 120);
+      const header = Buffer.from('{"token":"');
+      res.write(header);
+      bytesWritten += header.length;
+      let chunksSent = 0;
+      const writeNext = () => {
+        if (chunksSent >= 18) {
+          const tail = Buffer.from('","expires_at":9999999999}');
+          res.write(tail);
+          bytesWritten += tail.length;
+          res.end();
+          return;
+        }
+        const ok = res.write(chunk);
+        bytesWritten += chunk.length;
+        chunksSent += 1;
+        if (ok) {
+          setImmediate(writeNext);
+        } else {
+          res.once("drain", writeNext);
+        }
+      };
+      writeNext();
+    });
+
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("expected server address");
+    }
+
+    try {
+      const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) =>
+        fetch(`http://127.0.0.1:${address.port}/token`, init),
+      );
+      const { resolveCopilotApiToken } = await import("./provider-auth.js");
+
+      await expect(
+        resolveCopilotApiToken({
+          githubToken: "github-token",
+          fetchImpl,
+          cachePath: "/tmp/copilot-token-http-proof.json",
+          loadJsonFileImpl: () => undefined,
+          saveJsonFileImpl: () => {
+            throw new Error("should not save oversized token");
+          },
+        }),
+      ).rejects.toThrow("github-copilot.token");
+
+      expect(bytesWritten).toBeGreaterThan(17 * MiB);
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+      });
+    }
+  });
+
+  it("accepts a normal Copilot token success body over HTTP transport", async () => {
+    vi.resetModules();
+
+    const http = await import("node:http");
+    const { once } = await import("node:events");
+    const body = JSON.stringify({
+      token: "gho_abc;proxy-ep=proxy.individual.githubcopilot.com",
+      expires_at: "+2000000000",
+    });
+
+    const server = http.createServer((_req, res) => {
+      res.writeHead(200, {
+        "Content-Type": "application/json",
+        "Content-Length": String(Buffer.byteLength(body)),
+      });
+      res.end(body);
+    });
+
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("expected server address");
+    }
+
+    try {
+      const saved: unknown[] = [];
+      const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) =>
+        fetch(`http://127.0.0.1:${address.port}/token`, init),
+      );
+      const { resolveCopilotApiToken } = await import("./provider-auth.js");
+
+      const result = await resolveCopilotApiToken({
+        githubToken: "github-token",
+        fetchImpl,
+        cachePath: "/tmp/copilot-token-http-happy.json",
+        loadJsonFileImpl: () => undefined,
+        saveJsonFileImpl: (path, value) => {
+          saved.push({ path, value });
+        },
+      });
+
+      expect(result.token).toContain("proxy-ep=proxy.individual.githubcopilot.com");
+      expect(saved).toHaveLength(1);
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+      });
+    }
+  });
+
   it("refreshes cached Copilot tokens with out-of-range expiry values", async () => {
     vi.resetModules();
 

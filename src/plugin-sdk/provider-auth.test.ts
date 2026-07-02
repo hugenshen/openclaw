@@ -457,7 +457,7 @@ describe("provider auth profile helpers", () => {
       await expect(
         resolveCopilotApiToken({
           githubToken: "github-token",
-          fetchImpl,
+          fetchImpl: fetchImpl as typeof fetch,
           cachePath: "/tmp/copilot-token-http-proof.json",
           loadJsonFileImpl: () => undefined,
           saveJsonFileImpl: () => {
@@ -508,7 +508,7 @@ describe("provider auth profile helpers", () => {
 
       const result = await resolveCopilotApiToken({
         githubToken: "github-token",
-        fetchImpl,
+        fetchImpl: fetchImpl as typeof fetch,
         cachePath: "/tmp/copilot-token-http-happy.json",
         loadJsonFileImpl: () => undefined,
         saveJsonFileImpl: (path, value) => {

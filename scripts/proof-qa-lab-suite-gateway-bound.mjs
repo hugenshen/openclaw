@@ -178,14 +178,14 @@ console.log("\n--- Case 5: bounded helper cancels oversized injected stream ---"
 
 console.log("\n--- Case 6: qa-lab suite gateway regression test ---");
 const vitest = spawnSync(
-  "node",
+  process.execPath,
   [
     join(repoRoot, "scripts/run-vitest.mjs"),
     "extensions/qa-lab/src/suite-runtime-gateway.test.ts",
     "-t",
     "bounds oversized suite gateway JSON responses",
   ],
-  { cwd: repoRoot, encoding: "utf8", env: { ...process.env, OPENCLAW_VITEST_MAX_WORKERS: "1" } },
+  { cwd: repoRoot, encoding: "utf8", env: { OPENCLAW_VITEST_MAX_WORKERS: "1" } },
 );
 if (vitest.stdout) {
   for (const line of vitest.stdout.split("\n").filter(Boolean)) {

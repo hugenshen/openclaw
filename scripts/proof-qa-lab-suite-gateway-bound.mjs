@@ -185,7 +185,7 @@ const vitest = spawnSync(
     "-t",
     "bounds oversized suite gateway JSON responses",
   ],
-  { cwd: repoRoot, encoding: "utf8", env: { OPENCLAW_VITEST_MAX_WORKERS: "1" } },
+  { cwd: repoRoot, encoding: "utf8", env: { ...process.env, OPENCLAW_VITEST_MAX_WORKERS: "1" } },
 );
 if (vitest.stdout) {
   for (const line of vitest.stdout.split("\n").filter(Boolean)) {

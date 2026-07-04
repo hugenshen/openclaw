@@ -6,10 +6,11 @@
   },
   "enabledByDefault": true,
   "providers": ["anthropic"],
+  "nonSecretAuthMarkers": ["claude-cli-api-key-helper"],
   "providerCatalogEntry": "./provider-discovery.ts",
   "modelCatalog": {
     "runtimeAugment": true,
-        "providers": {
+    "providers": {
       "claude-cli": {
         "models": [
           {

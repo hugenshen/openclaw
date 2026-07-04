@@ -3,6 +3,7 @@
  * to Anthropic refs while preserving runtime allowlist entries for CLI execution.
  */
 import {
+  CLAUDE_CLI_API_KEY_HELPER_MARKER,
   CLAUDE_CLI_PROFILE_ID,
   type OpenClawConfig,
   type ProviderAuthResult,
@@ -185,6 +186,18 @@ function buildClaudeCliAuthProfiles(
           access: credential.access,
           refresh: credential.refresh,
           expires: credential.expires,
+        },
+      },
+    ];
+  }
+  if (credential.type === "api-key-helper") {
+    return [
+      {
+        profileId: CLAUDE_CLI_PROFILE_ID,
+        credential: {
+          type: "api_key",
+          provider: CLAUDE_CLI_BACKEND_ID,
+          key: CLAUDE_CLI_API_KEY_HELPER_MARKER,
         },
       },
     ];

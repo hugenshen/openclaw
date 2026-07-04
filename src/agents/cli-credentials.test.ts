@@ -7,6 +7,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 const execSyncMock = vi.fn();
 const CLI_CREDENTIALS_CACHE_TTL_MS = 15 * 60 * 1000;
 let readClaudeCliCredentialsCached: typeof import("./cli-credentials.js").readClaudeCliCredentialsCached;
+let readClaudeCliCredentials: typeof import("./cli-credentials.js").readClaudeCliCredentials;
 let readCodexCliCredentialsCached: typeof import("./cli-credentials.js").readCodexCliCredentialsCached;
 let resetCliCredentialCachesForTest: typeof import("./cli-credentials.js").resetCliCredentialCachesForTest;
 let readCodexCliCredentials: typeof import("./cli-credentials.js").readCodexCliCredentials;
@@ -57,6 +58,7 @@ describe("cli credentials", () => {
   beforeAll(async () => {
     ({
       readClaudeCliCredentialsCached,
+      readClaudeCliCredentials,
       readCodexCliCredentialsCached,
       resetCliCredentialCachesForTest,
       readCodexCliCredentials,
@@ -185,6 +187,30 @@ describe("cli credentials", () => {
     });
     expect(withoutPrompt).toBeNull();
     expect(execSyncMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("reads Claude CLI apiKeyHelper settings as a non-secret credential", () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-claude-helper-"));
+    const claudeDir = path.join(tempDir, ".claude");
+    fs.mkdirSync(claudeDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(claudeDir, "settings.json"),
+      JSON.stringify({ apiKeyHelper: "security find-generic-password -w -s claude" }),
+    );
+
+    const credential = readClaudeCliCredentials({
+      allowKeychainPrompt: false,
+      platform: "linux",
+      homeDir: tempDir,
+      execSync: execSyncMock,
+    });
+
+    expect(credential).toEqual({
+      type: "api-key-helper",
+      provider: "anthropic",
+      marker: "claude-cli-api-key-helper",
+    });
+    expect(execSyncMock).not.toHaveBeenCalled();
   });
 
   it("reads Codex credentials from keychain when available", () => {

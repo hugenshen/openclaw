@@ -31,7 +31,8 @@ const CLAUDE_CLI_PROVIDER = "claude-cli";
 
 type ClaudeCliReadableCredential =
   | Pick<OAuthCredential, "type" | "expires">
-  | Pick<TokenCredential, "type" | "expires">;
+  | Pick<TokenCredential, "type" | "expires">
+  | { type: "api-key-helper" };
 
 type ClaudeCliDirHealth = "present" | "missing" | "not_directory" | "unreadable" | "readonly";
 
@@ -86,6 +87,9 @@ function probeDirectoryHealth(dirPath: string): ClaudeCliDirHealth {
 function formatCredentialLabel(credential: ClaudeCliReadableCredential): string {
   if (credential.type === "oauth" || credential.type === "token") {
     return credential.type;
+  }
+  if (credential.type === "api-key-helper") {
+    return "apiKeyHelper";
   }
   return "unknown";
 }

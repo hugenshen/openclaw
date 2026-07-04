@@ -49,6 +49,7 @@ export {
 } from "../agents/auth-profiles/profiles.js";
 export { resolveEnvApiKey } from "../agents/model-auth-env.js";
 export {
+  CLAUDE_CLI_API_KEY_HELPER_MARKER,
   readClaudeCliCredentialsCached,
   readCodexCliCredentialsCached,
 } from "../agents/cli-credentials.js";

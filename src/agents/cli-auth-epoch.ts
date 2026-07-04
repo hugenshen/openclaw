@@ -78,7 +78,7 @@ function encodeOAuthIdentity(credential: {
 }
 
 function encodeClaudeCredential(credential: ClaudeCliCredential): string {
-  // Identity-only hashing for both OAuth and token Claude CLI credentials.
+  // Identity-only hashing for Claude CLI credentials.
   // The Claude CLI keychain rewrite is not atomic: a token rotation can
   // briefly produce a partial read where `refreshToken` is missing, and the
   // parser falls back to a token-shaped credential. With the previous

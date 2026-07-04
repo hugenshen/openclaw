@@ -19,12 +19,14 @@ import type { OAuthProvider } from "./auth-profiles/types.js";
 const log = createSubsystemLogger("agents/auth-profiles");
 
 const CLAUDE_CLI_CREDENTIALS_RELATIVE_PATH = ".claude/.credentials.json";
+const CLAUDE_CLI_SETTINGS_RELATIVE_PATH = ".claude/settings.json";
 const CODEX_CLI_AUTH_FILENAME = "auth.json";
 const MINIMAX_CLI_CREDENTIALS_RELATIVE_PATH = ".minimax/oauth_creds.json";
 const GEMINI_CLI_CREDENTIALS_RELATIVE_PATH = ".gemini/oauth_creds.json";
 const CODEX_CLI_FALLBACK_EXPIRY_MS = 60 * 60 * 1000;
 
 const CLAUDE_CLI_KEYCHAIN_SERVICE = "Claude Code-credentials";
+export const CLAUDE_CLI_API_KEY_HELPER_MARKER = "claude-cli-api-key-helper";
 type CachedValue<T> = {
   value: T | null;
   readAt: number;
@@ -59,6 +61,11 @@ export type ClaudeCliCredential =
       provider: "anthropic";
       token: string;
       expires: number;
+    }
+  | {
+      type: "api-key-helper";
+      provider: "anthropic";
+      marker: typeof CLAUDE_CLI_API_KEY_HELPER_MARKER;
     };
 
 /** Credential shape parsed from Codex CLI storage. */
@@ -97,6 +104,11 @@ type ExecSyncFn = typeof execSync;
 function resolveClaudeCliCredentialsPath(homeDir?: string) {
   const baseDir = homeDir ?? resolveUserPath("~");
   return path.join(baseDir, CLAUDE_CLI_CREDENTIALS_RELATIVE_PATH);
+}
+
+function resolveClaudeCliSettingsPath(homeDir?: string) {
+  const baseDir = homeDir ?? resolveUserPath("~");
+  return path.join(baseDir, CLAUDE_CLI_SETTINGS_RELATIVE_PATH);
 }
 
 function parseClaudeCliOauthCredential(claudeOauth: unknown): ClaudeCliCredential | null {
@@ -429,6 +441,22 @@ function readClaudeCliKeychainCredentials(
   }
 }
 
+function readClaudeCliApiKeyHelperCredential(homeDir?: string): ClaudeCliCredential | null {
+  const raw = loadJsonFile(resolveClaudeCliSettingsPath(homeDir));
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return null;
+  }
+  const apiKeyHelper = (raw as Record<string, unknown>).apiKeyHelper;
+  if (typeof apiKeyHelper !== "string" || apiKeyHelper.trim().length === 0) {
+    return null;
+  }
+  return {
+    type: "api-key-helper",
+    provider: "anthropic",
+    marker: CLAUDE_CLI_API_KEY_HELPER_MARKER,
+  };
+}
+
 /** Reads Claude CLI credentials from macOS Keychain or the CLI credential file. */
 export function readClaudeCliCredentials(options?: {
   allowKeychainPrompt?: boolean;
@@ -450,11 +478,14 @@ export function readClaudeCliCredentials(options?: {
   const credPath = resolveClaudeCliCredentialsPath(options?.homeDir);
   const raw = loadJsonFile(credPath);
   if (!raw || typeof raw !== "object") {
-    return null;
+    return readClaudeCliApiKeyHelperCredential(options?.homeDir);
   }
 
   const data = raw as Record<string, unknown>;
-  return parseClaudeCliOauthCredential(data.claudeAiOauth);
+  return (
+    parseClaudeCliOauthCredential(data.claudeAiOauth) ??
+    readClaudeCliApiKeyHelperCredential(options?.homeDir)
+  );
 }
 
 /** @deprecated Anthropic provider-owned CLI credential helper; do not use from third-party plugins. */
@@ -468,12 +499,13 @@ export function readClaudeCliCredentialsCached(options?: {
   const platform = options?.platform ?? process.platform;
   const ttlMs = options?.ttlMs ?? 0;
   const credentialsPath = resolveClaudeCliCredentialsPath(options?.homeDir);
+  const settingsPath = resolveClaudeCliSettingsPath(options?.homeDir);
   const keychainIntent =
     platform === "darwin" && options?.allowKeychainPrompt !== false ? "keychain" : "file";
   return readCachedCliCredential({
     ttlMs,
     cache: claudeCliCache,
-    cacheKey: `${credentialsPath}:${keychainIntent}`,
+    cacheKey: `${credentialsPath}:${settingsPath}:${keychainIntent}`,
     read: () =>
       readClaudeCliCredentials({
         allowKeychainPrompt: options?.allowKeychainPrompt,
@@ -484,6 +516,8 @@ export function readClaudeCliCredentialsCached(options?: {
     setCache: (next) => {
       claudeCliCache = next;
     },
+    readSourceFingerprint: () =>
+      `${readFileMtimeMs(credentialsPath) ?? "missing"}:${readFileMtimeMs(settingsPath) ?? "missing"}`,
   });
 }
 

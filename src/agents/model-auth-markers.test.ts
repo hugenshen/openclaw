@@ -85,6 +85,7 @@ describe("model auth markers", () => {
   it("reads bundled plugin-owned non-secret markers from manifests", () => {
     withEnv(cleanPluginManifestEnv(), () => {
       const markers = new Set(listKnownNonSecretApiKeyMarkers());
+      expect(markers.has("claude-cli-api-key-helper")).toBe(true);
       expect(markers.has("codex-app-server")).toBe(true);
       expect(markers.has("gcp-vertex-credentials")).toBe(true);
       expect(markers.has("lmstudio-local")).toBe(true);

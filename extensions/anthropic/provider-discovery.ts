@@ -12,19 +12,27 @@ function resolveClaudeCliSyntheticAuth() {
   if (!credential) {
     return undefined;
   }
-  return credential.type === "oauth"
-    ? {
-        apiKey: credential.access,
-        source: "Claude CLI native auth",
-        mode: "oauth" as const,
-        expiresAt: credential.expires,
-      }
-    : {
-        apiKey: credential.token,
-        source: "Claude CLI native auth",
-        mode: "token" as const,
-        expiresAt: credential.expires,
-      };
+  if (credential.type === "oauth") {
+    return {
+      apiKey: credential.access,
+      source: "Claude CLI native auth",
+      mode: "oauth" as const,
+      expiresAt: credential.expires,
+    };
+  }
+  if (credential.type === "token") {
+    return {
+      apiKey: credential.token,
+      source: "Claude CLI native auth",
+      mode: "token" as const,
+      expiresAt: credential.expires,
+    };
+  }
+  return {
+    apiKey: credential.marker,
+    source: "Claude CLI apiKeyHelper",
+    mode: "api-key" as const,
+  };
 }
 
 const anthropicProviderDiscovery: ProviderPlugin = {

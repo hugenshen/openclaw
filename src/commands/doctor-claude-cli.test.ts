@@ -135,6 +135,44 @@ describe("noteClaudeCliHealth", () => {
     });
   });
 
+  it("reports apiKeyHelper-backed Claude CLI auth as healthy", async () => {
+    await withTempHome(({ homeDir, workspaceDir }) => {
+      const noteFn = vi.fn();
+      noteClaudeCliHealth(
+        {
+          agents: {
+            defaults: {
+              model: { primary: "claude-cli/claude-sonnet-4-6" },
+            },
+          },
+        },
+        {
+          homeDir,
+          workspaceDir,
+          noteFn,
+          store: createStore({
+            [CLAUDE_CLI_PROFILE_ID]: {
+              type: "api_key",
+              provider: "claude-cli",
+              key: "claude-cli-api-key-helper",
+            },
+          }),
+          readClaudeCliCredentials: () => ({
+            type: "api-key-helper",
+          }),
+          resolveCommandPath: () => "/opt/homebrew/bin/claude",
+        },
+      );
+
+      const body = noteBody(noteFn);
+      expect(body).toContain("Headless Claude auth: OK (apiKeyHelper).");
+      expect(body).toContain(
+        `OpenClaw auth profile: ${CLAUDE_CLI_PROFILE_ID} (provider claude-cli).`,
+      );
+      expect(body).not.toContain("OpenClaw auth profile: missing");
+    });
+  });
+
   it("reports the Claude CLI workspace for a non-default runtime agent", async () => {
     await withTempHome(({ homeDir, workspaceDir }) => {
       const root = path.dirname(workspaceDir);

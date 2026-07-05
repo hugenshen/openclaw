@@ -1,5 +1,8 @@
 // Tlon plugin module implements channel ops behavior.
-import { readResponseTextLimited } from "openclaw/plugin-sdk/provider-http";
+import {
+  readProviderJsonResponse,
+  readResponseTextLimited,
+} from "openclaw/plugin-sdk/provider-http";
 import type { LookupFn, SsrFPolicy } from "openclaw/plugin-sdk/ssrf-runtime";
 import { UrbitHttpError } from "./errors.js";
 import { urbitFetch } from "./fetch.js";
@@ -60,7 +63,9 @@ export async function pokeUrbitChannel(
 
   try {
     if (!response.ok && response.status !== 204) {
-      const errorText = await readResponseTextLimited(response, TLON_ERROR_BODY_LIMIT_BYTES).catch(() => "");
+      const errorText = await readResponseTextLimited(response, TLON_ERROR_BODY_LIMIT_BYTES).catch(
+        () => "",
+      );
       throw new Error(`Poke failed: ${response.status}${errorText ? ` - ${errorText}` : ""}`);
     }
     return pokeId;
@@ -92,11 +97,7 @@ export async function scryUrbitPath(
     if (!response.ok) {
       throw new Error(`Scry failed: ${response.status} for path ${params.path}`);
     }
-    try {
-      return await response.json();
-    } catch (cause) {
-      throw new Error(`Urbit scry response was malformed JSON for path ${params.path}`, { cause });
-    }
+    return await readProviderJsonResponse(response, "tlon.scry");
   } finally {
     await release();
   }

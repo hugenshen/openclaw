@@ -1,7 +1,93 @@
-import { describe, expect, it, vi } from "vitest";
+import { createServer, type Server } from "node:http";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { fetchClawRouterUsage } from "./usage.js";
 
+const OVERSIZED_RESPONSE_BYTES = 18 * 1024 * 1024;
+
+function createOversizedUsageServer(): { server: Server; closed: Promise<number> } {
+  let resolveClosed: (sentBytes: number) => void = () => {};
+  const closed = new Promise<number>((resolve) => {
+    resolveClosed = resolve;
+  });
+  const server = createServer((req, res) => {
+    if (req.url !== "/v1/usage") {
+      res.writeHead(404, { "content-type": "application/json; charset=utf-8" });
+      res.end(JSON.stringify({ error: `unexpected path: ${req.url}` }));
+      return;
+    }
+    let sentBytes = 0;
+    let stopped = false;
+    let prefixSent = false;
+    const prefixChunk = Buffer.from('{"budget":{"configured":false},"payload":"');
+    const bodyChunk = Buffer.alloc(64 * 1024, 0x61);
+    const suffixChunk = Buffer.from('"}');
+    const writeBuffer = (buffer: Buffer) => {
+      sentBytes += buffer.length;
+      if (!res.write(buffer)) {
+        res.once("drain", writeChunks);
+        return false;
+      }
+      return true;
+    };
+    const writeChunks = () => {
+      if (!prefixSent) {
+        prefixSent = true;
+        if (!writeBuffer(prefixChunk)) {
+          return;
+        }
+      }
+      while (true) {
+        if (stopped) {
+          return;
+        }
+        if (sentBytes + bodyChunk.length + suffixChunk.length >= OVERSIZED_RESPONSE_BYTES) {
+          break;
+        }
+        if (!writeBuffer(bodyChunk)) {
+          return;
+        }
+      }
+      if (!stopped) {
+        sentBytes += suffixChunk.length;
+        res.end(suffixChunk);
+      }
+    };
+    res.writeHead(200, { "content-type": "application/json; charset=utf-8", connection: "close" });
+    res.on("close", () => {
+      stopped = true;
+      resolveClosed(sentBytes);
+    });
+    req.on("aborted", () => {
+      stopped = true;
+      res.destroy();
+    });
+    writeChunks();
+  });
+  return { server, closed };
+}
+
+async function listenLoopbackServer(server: Server): Promise<number> {
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      server.off("error", reject);
+      resolve();
+    });
+  });
+  const address = server.address();
+  if (!address || typeof address === "string") {
+    throw new Error("test server failed to bind");
+  }
+  return address.port;
+}
+
 describe("ClawRouter usage", () => {
+  const stops: Array<() => Promise<void>> = [];
+
+  afterEach(async () => {
+    await Promise.all(stops.splice(0).map((stop) => stop()));
+  });
+
   it("maps the managed monthly budget and usage totals", async () => {
     const fetchFn = vi.fn(async () =>
       Response.json({
@@ -81,5 +167,28 @@ describe("ClawRouter usage", () => {
         ) as unknown as typeof fetch,
       }),
     ).rejects.toThrow("ClawRouter usage request failed (HTTP 403)");
+  });
+
+  it("bounds oversized usage JSON responses and closes the stream early", async () => {
+    const oversized = createOversizedUsageServer();
+    const port = await listenLoopbackServer(oversized.server);
+    stops.push(async () => {
+      oversized.server.closeAllConnections?.();
+      await new Promise<void>((resolve, reject) => {
+        oversized.server.close((error) => (error ? reject(error) : resolve()));
+      });
+    });
+
+    await expect(
+      fetchClawRouterUsage({
+        token: "proxy-key",
+        baseUrl: `http://127.0.0.1:${port}/v1`,
+        timeoutMs: 5000,
+        fetchFn: fetch,
+      }),
+    ).rejects.toThrow("clawrouter.usage: JSON response exceeds 16777216 bytes");
+
+    const sentBytes = await oversized.closed;
+    expect(sentBytes).toBeLessThan(OVERSIZED_RESPONSE_BYTES);
   });
 });

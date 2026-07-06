@@ -69,6 +69,40 @@ function createStalledBodyResponse(params: {
   };
 }
 
+function createOversizedArchiveBodyResponse(
+  params: {
+    headers?: HeadersInit;
+  } = {},
+): {
+  response: Response;
+  cancel: ReturnType<typeof vi.fn>;
+} {
+  const cancel = vi.fn();
+  const chunk = new Uint8Array(512 * 1024).fill(0);
+  const overshootChunks = 512 + 1; // 256 MiB + 512 KiB > CLAWHUB_ARCHIVE_MAX_BYTES
+  let emitted = 0;
+  const body = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (emitted >= overshootChunks) {
+        controller.close();
+        return;
+      }
+      emitted += 1;
+      controller.enqueue(chunk);
+    },
+    cancel() {
+      cancel();
+    },
+  });
+  return {
+    response: new Response(body, {
+      status: 200,
+      headers: params.headers ?? { "content-type": "application/zip" },
+    }),
+    cancel,
+  };
+}
+
 describe("clawhub helpers", () => {
   const originalEnv = captureEnv(["HOME", "XDG_CONFIG_HOME"]);
 
@@ -844,6 +878,51 @@ describe("clawhub helpers", () => {
           }),
       }),
     ).rejects.toThrow(/declared sha256/);
+  });
+
+  it("rejects oversized package archive downloads and cancels the stream", async () => {
+    const oversized = createOversizedArchiveBodyResponse();
+
+    await expect(
+      downloadClawHubPackageArchive({
+        name: "@hyf/zai-external-alpha",
+        version: "0.0.1",
+        fetchImpl: async () => oversized.response,
+      }),
+    ).rejects.toThrow(
+      "ClawHub package archive download for @hyf/zai-external-alpha exceeded 268435456 bytes (268959744 bytes received)",
+    );
+  });
+
+  it("rejects oversized ClawPack artifact downloads and cancels the stream", async () => {
+    const oversized = createOversizedArchiveBodyResponse({
+      headers: { "content-type": "application/octet-stream" },
+    });
+
+    await expect(
+      downloadClawHubPackageArchive({
+        name: "demo",
+        version: "1.2.3",
+        artifact: "clawpack",
+        fetchImpl: async () => oversized.response,
+      }),
+    ).rejects.toThrow(
+      "ClawHub ClawPack download for demo@1.2.3 exceeded 268435456 bytes (268959744 bytes received)",
+    );
+  });
+
+  it("rejects oversized skill archive downloads and cancels the stream", async () => {
+    const oversized = createOversizedArchiveBodyResponse();
+
+    await expect(
+      downloadClawHubSkillArchive({
+        slug: "agentreceipt",
+        version: "1.0.0",
+        fetchImpl: async () => oversized.response,
+      }),
+    ).rejects.toThrow(
+      "ClawHub skill archive download for agentreceipt exceeded 268435456 bytes (268959744 bytes received)",
+    );
   });
 
   it("annotates 429 errors with the reset hint and a sign-in hint when unauthenticated", async () => {

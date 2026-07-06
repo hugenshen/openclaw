@@ -21,6 +21,8 @@ const DEFAULT_CLAWHUB_URL = "https://clawhub.ai";
 const DEFAULT_GITHUB_CODELOAD_URL = "https://codeload.github.com";
 const DEFAULT_FETCH_TIMEOUT_MS = 30_000;
 const SKILL_CARD_MAX_BYTES = 256 * 1024;
+// Align with marketplace archive downloads (src/plugins/marketplace.ts).
+const CLAWHUB_ARCHIVE_MAX_BYTES = 256 * 1024 * 1024;
 // ClawHub is an external marketplace: bound untrusted JSON and error bodies so
 // a hostile or malfunctioning host cannot exhaust memory with an endless stream.
 const CLAWHUB_JSON_MAX_BYTES = 16 * 1024 * 1024;
@@ -798,15 +800,19 @@ async function readClawHubResponseBytes(params: {
   resourceLabel: string;
 }): Promise<Uint8Array> {
   const timeoutMs = resolveClawHubRequestTimeoutMs(params.timeoutMs);
-  return await readResponseWithLimit(params.response, params.maxBytes ?? Number.MAX_SAFE_INTEGER, {
-    chunkTimeoutMs: timeoutMs,
-    onOverflow: ({ size, maxBytes }) =>
-      new Error(
-        `ClawHub ${params.resourceLabel} exceeded ${maxBytes} bytes (${size} bytes received)`,
-      ),
-    onIdleTimeout: ({ chunkTimeoutMs }) =>
-      new Error(`ClawHub ${params.resourceLabel} body stalled after ${chunkTimeoutMs}ms`),
-  });
+  return await readResponseWithLimit(
+    params.response,
+    params.maxBytes ?? CLAWHUB_ARCHIVE_MAX_BYTES,
+    {
+      chunkTimeoutMs: timeoutMs,
+      onOverflow: ({ size, maxBytes }) =>
+        new Error(
+          `ClawHub ${params.resourceLabel} exceeded ${maxBytes} bytes (${size} bytes received)`,
+        ),
+      onIdleTimeout: ({ chunkTimeoutMs }) =>
+        new Error(`ClawHub ${params.resourceLabel} body stalled after ${chunkTimeoutMs}ms`),
+    },
+  );
 }
 
 function isJsonObject(value: unknown): value is Record<string, unknown> {
@@ -1316,6 +1322,7 @@ export async function downloadClawHubPackageArchive(params: {
     }
     const bytes = await readClawHubResponseBytes({
       response,
+      maxBytes: CLAWHUB_ARCHIVE_MAX_BYTES,
       timeoutMs: params.timeoutMs,
       resourceLabel: `ClawPack download for ${params.name}@${params.version}`,
     });
@@ -1395,6 +1402,7 @@ export async function downloadClawHubPackageArchive(params: {
   }
   const bytes = await readClawHubResponseBytes({
     response,
+    maxBytes: CLAWHUB_ARCHIVE_MAX_BYTES,
     timeoutMs: params.timeoutMs,
     resourceLabel: `package archive download for ${params.name}`,
   });
@@ -1442,6 +1450,7 @@ export async function downloadClawHubSkillArchive(params: {
   }
   const bytes = await readClawHubResponseBytes({
     response,
+    maxBytes: CLAWHUB_ARCHIVE_MAX_BYTES,
     timeoutMs: params.timeoutMs,
     resourceLabel: `skill archive download for ${params.slug}`,
   });
@@ -1485,6 +1494,7 @@ export async function downloadClawHubSkillArchiveUrl(params: {
   }
   const bytes = await readClawHubResponseBytes({
     response,
+    maxBytes: CLAWHUB_ARCHIVE_MAX_BYTES,
     timeoutMs: params.timeoutMs,
     resourceLabel: `skill archive download at ${url.pathname}`,
   });
@@ -1522,6 +1532,7 @@ export async function downloadClawHubGitHubSkillArchive(params: {
   }
   const bytes = await readClawHubResponseBytes({
     response,
+    maxBytes: CLAWHUB_ARCHIVE_MAX_BYTES,
     timeoutMs: params.timeoutMs,
     resourceLabel: `GitHub source archive for ${params.repo}@${params.commit}`,
   });

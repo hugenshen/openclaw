@@ -945,6 +945,28 @@ describe("clawhub helpers", () => {
     },
   );
 
+  it("uses decoded stream bytes instead of encoded content length", async () => {
+    const bytes = new Uint8Array([1, 2, 3]);
+    const archive = await downloadClawHubPackageArchive({
+      name: "encoded-package",
+      version: "1.0.0",
+      fetchImpl: async () =>
+        new Response(bytes, {
+          status: 200,
+          headers: {
+            "content-encoding": "gzip",
+            "content-length": String(256 * 1024 * 1024 + 1),
+            "content-type": "application/zip",
+          },
+        }),
+    });
+    try {
+      await expect(fs.readFile(archive.archivePath)).resolves.toEqual(Buffer.from(bytes));
+    } finally {
+      await archive.cleanup();
+    }
+  });
+
   it("annotates 429 errors with the reset hint and a sign-in hint when unauthenticated", async () => {
     process.env.OPENCLAW_CLAWHUB_CONFIG_PATH = path.join(os.tmpdir(), "openclaw-no-clawhub-config");
     await expect(

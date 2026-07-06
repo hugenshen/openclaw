@@ -804,10 +804,14 @@ async function readClawHubResponseBytes(params: {
 }): Promise<Uint8Array> {
   const timeoutMs = resolveClawHubRequestTimeoutMs(params.timeoutMs);
   const maxBytes = params.maxBytes ?? CLAWHUB_ARCHIVE_MAX_BYTES;
-  const declaredSize = parseStrictNonNegativeInteger(params.response.headers.get("content-length"));
+  const contentEncoding = normalizeOptionalString(params.response.headers.get("content-encoding"));
+  const declaredSize =
+    !contentEncoding || contentEncoding.toLowerCase() === "identity"
+      ? parseStrictNonNegativeInteger(params.response.headers.get("content-length"))
+      : undefined;
   if (declaredSize !== undefined && declaredSize > maxBytes) {
-    // Release the transport immediately when the peer already declares an
-    // oversized body; streamed or malformed lengths remain guarded below.
+    // Fetch may decode encoded bodies while retaining their wire length, so
+    // only identity lengths can safely short-circuit the decoded stream cap.
     await params.response.body?.cancel().catch(() => undefined);
     throw createClawHubBodyLimitError(params.resourceLabel, declaredSize, maxBytes);
   }

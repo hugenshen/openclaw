@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { withTempDir } from "../test-helpers/temp-dir.js";
 import { captureEnv, setTestEnvValue } from "../test-utils/env.js";
 import {
+  downloadClawHubGitHubSkillArchive,
   downloadClawHubPackageArchive,
   downloadClawHubSkillArchive,
   downloadClawHubSkillArchiveUrl,
@@ -79,7 +80,7 @@ function createOversizedArchiveBodyResponse(
 } {
   const cancel = vi.fn();
   const chunk = new Uint8Array(512 * 1024).fill(0);
-  const overshootChunks = 512 + 1; // 256 MiB + 512 KiB > CLAWHUB_ARCHIVE_MAX_BYTES
+  const overshootChunks = 512 + 1;
   let emitted = 0;
   const body = new ReadableStream<Uint8Array>({
     pull(controller) {
@@ -102,6 +103,66 @@ function createOversizedArchiveBodyResponse(
     cancel,
   };
 }
+
+const oversizedArchiveCases: Array<{
+  name: string;
+  headers?: HeadersInit;
+  download: (response: Response) => Promise<unknown>;
+  expectedResource: string;
+}> = [
+  {
+    name: "package archive",
+    download: (response) =>
+      downloadClawHubPackageArchive({
+        name: "@hyf/zai-external-alpha",
+        version: "0.0.1",
+        fetchImpl: async () => response,
+      }),
+    expectedResource: "package archive download for @hyf/zai-external-alpha",
+  },
+  {
+    name: "ClawPack artifact",
+    headers: { "content-type": "application/octet-stream" },
+    download: (response) =>
+      downloadClawHubPackageArchive({
+        name: "demo",
+        version: "1.2.3",
+        artifact: "clawpack",
+        fetchImpl: async () => response,
+      }),
+    expectedResource: "ClawPack download for demo@1.2.3",
+  },
+  {
+    name: "skill archive",
+    download: (response) =>
+      downloadClawHubSkillArchive({
+        slug: "agentreceipt",
+        version: "1.0.0",
+        fetchImpl: async () => response,
+      }),
+    expectedResource: "skill archive download for agentreceipt",
+  },
+  {
+    name: "resolver URL archive",
+    download: (response) =>
+      downloadClawHubSkillArchiveUrl({
+        baseUrl: "https://clawhub.ai",
+        url: "https://downloads.example.com/skill.zip",
+        fetchImpl: async () => response,
+      }),
+    expectedResource: "skill archive download at /skill.zip",
+  },
+  {
+    name: "GitHub source archive",
+    download: (response) =>
+      downloadClawHubGitHubSkillArchive({
+        repo: "owner/repo",
+        commit: "abc123",
+        fetchImpl: async () => response,
+      }),
+    expectedResource: "GitHub source archive for owner/repo@abc123",
+  },
+];
 
 describe("clawhub helpers", () => {
   const originalEnv = captureEnv(["HOME", "XDG_CONFIG_HOME"]);
@@ -880,50 +941,17 @@ describe("clawhub helpers", () => {
     ).rejects.toThrow(/declared sha256/);
   });
 
-  it("rejects oversized package archive downloads and cancels the stream", async () => {
-    const oversized = createOversizedArchiveBodyResponse();
+  it.each(oversizedArchiveCases)(
+    "rejects and cancels oversized $name downloads",
+    async ({ headers, download, expectedResource }) => {
+      const oversized = createOversizedArchiveBodyResponse({ headers });
 
-    await expect(
-      downloadClawHubPackageArchive({
-        name: "@hyf/zai-external-alpha",
-        version: "0.0.1",
-        fetchImpl: async () => oversized.response,
-      }),
-    ).rejects.toThrow(
-      "ClawHub package archive download for @hyf/zai-external-alpha exceeded 268435456 bytes (268959744 bytes received)",
-    );
-  });
-
-  it("rejects oversized ClawPack artifact downloads and cancels the stream", async () => {
-    const oversized = createOversizedArchiveBodyResponse({
-      headers: { "content-type": "application/octet-stream" },
-    });
-
-    await expect(
-      downloadClawHubPackageArchive({
-        name: "demo",
-        version: "1.2.3",
-        artifact: "clawpack",
-        fetchImpl: async () => oversized.response,
-      }),
-    ).rejects.toThrow(
-      "ClawHub ClawPack download for demo@1.2.3 exceeded 268435456 bytes (268959744 bytes received)",
-    );
-  });
-
-  it("rejects oversized skill archive downloads and cancels the stream", async () => {
-    const oversized = createOversizedArchiveBodyResponse();
-
-    await expect(
-      downloadClawHubSkillArchive({
-        slug: "agentreceipt",
-        version: "1.0.0",
-        fetchImpl: async () => oversized.response,
-      }),
-    ).rejects.toThrow(
-      "ClawHub skill archive download for agentreceipt exceeded 268435456 bytes (268959744 bytes received)",
-    );
-  });
+      await expect(download(oversized.response)).rejects.toThrow(
+        `ClawHub ${expectedResource} exceeded 268435456 bytes (268959744 bytes received)`,
+      );
+      expect(oversized.cancel).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it("annotates 429 errors with the reset hint and a sign-in hint when unauthenticated", async () => {
     process.env.OPENCLAW_CLAWHUB_CONFIG_PATH = path.join(os.tmpdir(), "openclaw-no-clawhub-config");

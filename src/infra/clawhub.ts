@@ -1322,7 +1322,6 @@ export async function downloadClawHubPackageArchive(params: {
     }
     const bytes = await readClawHubResponseBytes({
       response,
-      maxBytes: CLAWHUB_ARCHIVE_MAX_BYTES,
       timeoutMs: params.timeoutMs,
       resourceLabel: `ClawPack download for ${params.name}@${params.version}`,
     });
@@ -1402,7 +1401,6 @@ export async function downloadClawHubPackageArchive(params: {
   }
   const bytes = await readClawHubResponseBytes({
     response,
-    maxBytes: CLAWHUB_ARCHIVE_MAX_BYTES,
     timeoutMs: params.timeoutMs,
     resourceLabel: `package archive download for ${params.name}`,
   });
@@ -1450,7 +1448,6 @@ export async function downloadClawHubSkillArchive(params: {
   }
   const bytes = await readClawHubResponseBytes({
     response,
-    maxBytes: CLAWHUB_ARCHIVE_MAX_BYTES,
     timeoutMs: params.timeoutMs,
     resourceLabel: `skill archive download for ${params.slug}`,
   });
@@ -1494,7 +1491,6 @@ export async function downloadClawHubSkillArchiveUrl(params: {
   }
   const bytes = await readClawHubResponseBytes({
     response,
-    maxBytes: CLAWHUB_ARCHIVE_MAX_BYTES,
     timeoutMs: params.timeoutMs,
     resourceLabel: `skill archive download at ${url.pathname}`,
   });
@@ -1532,7 +1528,6 @@ export async function downloadClawHubGitHubSkillArchive(params: {
   }
   const bytes = await readClawHubResponseBytes({
     response,
-    maxBytes: CLAWHUB_ARCHIVE_MAX_BYTES,
     timeoutMs: params.timeoutMs,
     resourceLabel: `GitHub source archive for ${params.repo}@${params.commit}`,
   });

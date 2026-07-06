@@ -11,7 +11,10 @@ import {
 import { normalizeStringEntries } from "@openclaw/normalization-core/string-normalization";
 import { sha256Base64, sha256Hex as digestSha256Hex } from "./crypto-digest.js";
 import { readResponseTextSnippet, readResponseWithLimit } from "./http-body.js";
-import { parseStrictPositiveInteger } from "./parse-finite-number.js";
+import {
+  parseStrictNonNegativeInteger,
+  parseStrictPositiveInteger,
+} from "./parse-finite-number.js";
 import { isAtLeast, parseSemver } from "./runtime-guard.js";
 import { compareComparableSemver, parseComparableSemver } from "./semver-compare.js";
 import { createTempDownloadTarget } from "./temp-download.js";
@@ -801,15 +804,24 @@ async function readClawHubResponseBytes(params: {
 }): Promise<Uint8Array> {
   const timeoutMs = resolveClawHubRequestTimeoutMs(params.timeoutMs);
   const maxBytes = params.maxBytes ?? CLAWHUB_ARCHIVE_MAX_BYTES;
+  const declaredSize = parseStrictNonNegativeInteger(params.response.headers.get("content-length"));
+  if (declaredSize !== undefined && declaredSize > maxBytes) {
+    // Release the transport immediately when the peer already declares an
+    // oversized body; streamed or malformed lengths remain guarded below.
+    await params.response.body?.cancel().catch(() => undefined);
+    throw createClawHubBodyLimitError(params.resourceLabel, declaredSize, maxBytes);
+  }
   return await readResponseWithLimit(params.response, maxBytes, {
     chunkTimeoutMs: timeoutMs,
     onOverflow: ({ size, maxBytes }) =>
-      new Error(
-        `ClawHub ${params.resourceLabel} exceeded ${maxBytes} bytes (${size} bytes received)`,
-      ),
+      createClawHubBodyLimitError(params.resourceLabel, size, maxBytes),
     onIdleTimeout: ({ chunkTimeoutMs }) =>
       new Error(`ClawHub ${params.resourceLabel} body stalled after ${chunkTimeoutMs}ms`),
   });
+}
+
+function createClawHubBodyLimitError(resourceLabel: string, size: number, maxBytes: number): Error {
+  return new Error(`ClawHub ${resourceLabel} exceeded ${maxBytes} bytes (${size} bytes received)`);
 }
 
 function isJsonObject(value: unknown): value is Record<string, unknown> {

@@ -70,7 +70,7 @@ function createStalledBodyResponse(params: {
   };
 }
 
-function createOversizedArchiveBodyResponse(
+function createOversizedArchiveResponse(
   params: {
     headers?: HeadersInit;
   } = {},
@@ -79,26 +79,18 @@ function createOversizedArchiveBodyResponse(
   cancel: ReturnType<typeof vi.fn>;
 } {
   const cancel = vi.fn();
-  const chunk = new Uint8Array(512 * 1024).fill(0);
-  const overshootChunks = 512 + 1;
-  let emitted = 0;
   const body = new ReadableStream<Uint8Array>({
-    pull(controller) {
-      if (emitted >= overshootChunks) {
-        controller.close();
-        return;
-      }
-      emitted += 1;
-      controller.enqueue(chunk);
-    },
     cancel() {
       cancel();
     },
   });
+  const headers = new Headers(params.headers);
+  headers.set("content-type", headers.get("content-type") ?? "application/zip");
+  headers.set("content-length", String(256 * 1024 * 1024 + 512 * 1024));
   return {
     response: new Response(body, {
       status: 200,
-      headers: params.headers ?? { "content-type": "application/zip" },
+      headers,
     }),
     cancel,
   };
@@ -944,7 +936,7 @@ describe("clawhub helpers", () => {
   it.each(oversizedArchiveCases)(
     "rejects and cancels oversized $name downloads",
     async ({ headers, download, expectedResource }) => {
-      const oversized = createOversizedArchiveBodyResponse({ headers });
+      const oversized = createOversizedArchiveResponse({ headers });
 
       await expect(download(oversized.response)).rejects.toThrow(
         `ClawHub ${expectedResource} exceeded 268435456 bytes (268959744 bytes received)`,

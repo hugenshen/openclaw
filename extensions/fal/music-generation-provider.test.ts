@@ -32,6 +32,9 @@ vi.mock("openclaw/plugin-sdk/provider-http", async (importOriginal) => {
   const original = await importOriginal<typeof import("openclaw/plugin-sdk/provider-http")>();
   return {
     ...original,
+    // Keep the REAL readProviderJsonResponse so the byte-bounded reader
+    // actually streams and cancels oversized bodies under test.
+    readProviderJsonResponse: original.readProviderJsonResponse,
     assertOkOrThrowHttpError: assertOkOrThrowHttpErrorMock,
     postJsonRequest: postJsonRequestMock,
     resolveProviderHttpRequestConfig: resolveProviderHttpRequestConfigMock,
@@ -231,5 +234,55 @@ describe("fal music generation provider", () => {
       prompt: "orchestral hit",
       seconds_total: 12,
     });
+  });
+
+  it("bounds the music generation JSON read and cancels the stream when the body exceeds the byte cap", async () => {
+    // Larger than the shared 16 MiB readProviderJsonResponse cap so the bounded reader
+    // cancels the stream mid-flight; if the cap were removed the unbounded res.json()
+    // would buffer the whole body.
+    const ONE_MIB = 1024 * 1024;
+    const TOTAL_CHUNKS = 32; // 32 MiB advertised body, double the cap.
+    const chunk = new Uint8Array(ONE_MIB);
+
+    let bytesPulled = 0;
+    let canceled = false;
+    const makeOversizedJsonResponse = (): Response => {
+      let pulled = 0;
+      const body = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          if (pulled >= TOTAL_CHUNKS) {
+            controller.close();
+            return;
+          }
+          pulled += 1;
+          bytesPulled += chunk.length;
+          controller.enqueue(chunk);
+        },
+        cancel() {
+          canceled = true;
+        },
+      });
+      return new Response(body, {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    };
+
+    postJsonRequestMock.mockResolvedValue({
+      response: makeOversizedJsonResponse(),
+      release: vi.fn(async () => {}),
+    });
+
+    await expect(
+      buildFalMusicGenerationProvider().generateMusic({
+        provider: "fal",
+        model: "fal-ai/minimax-music/v2.6",
+        prompt: "oversized test",
+        cfg: {},
+      }),
+    ).rejects.toThrow(/fal-music-generation: JSON response exceeds/);
+    // The bounded reader cancels the body and never pulls the full advertised 32 MiB stream.
+    expect(canceled).toBe(true);
+    expect(bytesPulled).toBeLessThan(TOTAL_CHUNKS * ONE_MIB);
   });
 });

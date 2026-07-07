@@ -165,7 +165,7 @@ export function buildFalMusicGenerationProvider(): MusicGenerationProvider {
 
       try {
         await assertOkOrThrowHttpError(response, "fal music generation failed");
-        const payload = await readProviderJsonResponse<unknown>(response, "fal music generation");
+        const payload = await readProviderJsonResponse<unknown>(response, "fal-music-generation");
         const [candidate] = extractGeneratedMusicFileCandidates(payload);
         if (!candidate) {
           throw new Error("fal music generation response missing audio output");

@@ -4315,6 +4315,59 @@ describe("deliverOutboundPayloads", () => {
     expect(appendOptions?.config).toBe(cfg);
   });
 
+  it("passes full mirror metadata through transcript append", async () => {
+    setActivePluginRegistry(
+      createTestRegistry([
+        {
+          pluginId: "line",
+          source: "test",
+          plugin: createOutboundTestPlugin({
+            id: "line",
+            outbound: {
+              deliveryMode: "direct",
+              sendText: async ({ text }) => ({ channel: "line", messageId: text }),
+            },
+          }),
+        },
+      ]),
+    );
+    mocks.appendAssistantMessageToSessionTranscript.mockClear();
+
+    await deliverOutboundPayloads({
+      cfg: {} as OpenClawConfig,
+      channel: "line",
+      to: "U123",
+      payloads: [{ text: "done" }],
+      mirror: {
+        sessionKey: "agent:main:main",
+        agentId: "helper",
+        text: "done",
+        idempotencyKey: "idem-full-mirror",
+        expectedSessionId: "session-42",
+        storePath: "/tmp/custom-sessions.json",
+        deliveryMirror: {
+          kind: "channel-final",
+          sourceMessageId: "msg-42",
+        },
+      },
+    });
+
+    expect(mocks.appendAssistantMessageToSessionTranscript).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentId: "helper",
+        sessionKey: "agent:main:main",
+        text: "done",
+        idempotencyKey: "idem-full-mirror",
+        expectedSessionId: "session-42",
+        storePath: "/tmp/custom-sessions.json",
+        deliveryMirror: {
+          kind: "channel-final",
+          sourceMessageId: "msg-42",
+        },
+      }),
+    );
+  });
+
   it("does not mirror a full payload when only an internal sub-send succeeded", async () => {
     const partialResult = { channel: "line" as const, messageId: "partial-1" };
     const sendFormattedText = vi.fn(

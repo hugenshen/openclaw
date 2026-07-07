@@ -2378,6 +2378,11 @@ async function deliverOutboundPayloadsCore(
           sessionKey: params.mirror.sessionKey,
           text: mirrorText,
           idempotencyKey: params.mirror.idempotencyKey,
+          ...(params.mirror.expectedSessionId
+            ? { expectedSessionId: params.mirror.expectedSessionId }
+            : {}),
+          ...(params.mirror.storePath ? { storePath: params.mirror.storePath } : {}),
+          ...(params.mirror.deliveryMirror ? { deliveryMirror: params.mirror.deliveryMirror } : {}),
           config: params.cfg,
         });
         if (!mirrorResult.ok) {

@@ -2058,7 +2058,11 @@ export async function dispatchReplyFromConfig(
 
   const routeReplyToOriginating = async (
     payload: ReplyPayload,
-    options?: { abortSignal?: AbortSignal; mirror?: boolean; kind?: ReplyDispatchKind },
+    options?: {
+      abortSignal?: AbortSignal;
+      mirror?: boolean | TranscriptMirror;
+      kind?: ReplyDispatchKind;
+    },
   ) => {
     if (!shouldRouteToOriginating || !routeReplyChannel || !routeReplyTo || !routeReplyRuntime) {
       return null;
@@ -2813,7 +2817,11 @@ export async function dispatchReplyFromConfig(
       const result = await routeReplyToOriginating(normalizedPayload, {
         abortSignal,
         kind: "final",
-        ...(hasTranscriptOwner ? { mirror: false } : {}),
+        ...(hasTranscriptOwner
+          ? { mirror: false }
+          : sourceReplyTranscriptMirror
+            ? { mirror: sourceReplyTranscriptMirror }
+            : {}),
       });
       if (result) {
         if (!result.ok) {
@@ -2821,7 +2829,7 @@ export async function dispatchReplyFromConfig(
             `dispatch-from-config: route-reply (final) failed: ${result.error ?? "unknown error"}`,
           );
         }
-        if (isRoutedReplyDelivered(result)) {
+        if (isRoutedReplyDelivered(result) && hasTranscriptOwner) {
           await mirrorDeliveredReplyToTranscript({
             metadata: sourceReplyTranscriptMirror,
             cfg,

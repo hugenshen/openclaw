@@ -18,6 +18,7 @@ export async function executeStatusScanFromOverview(params: {
   runtime?: RuntimeEnv;
   summary?: {
     includeChannelSummary?: boolean;
+    credentialResolutionSkipped?: boolean;
   };
   resolveMemory: (args: {
     cfg: StatusScanOverviewResult["cfg"];
@@ -40,7 +41,12 @@ export async function executeStatusScanFromOverview(params: {
     }),
     resolveStatusSummaryFromOverview({
       overview: params.overview,
-      includeChannelSummary: params.summary?.includeChannelSummary,
+      ...(params.summary?.includeChannelSummary !== undefined
+        ? { includeChannelSummary: params.summary.includeChannelSummary }
+        : {}),
+      ...(params.summary?.credentialResolutionSkipped !== undefined
+        ? { credentialResolutionSkipped: params.summary.credentialResolutionSkipped }
+        : {}),
     }),
   ]);
 

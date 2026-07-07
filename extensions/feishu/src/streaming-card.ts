@@ -3,6 +3,7 @@
  */
 
 import type { Client } from "@larksuiteoapi/node-sdk";
+import { pruneMapToMaxSize } from "openclaw/plugin-sdk/collection-runtime";
 import {
   asDateTimestampMs,
   resolveDateTimestampMs,
@@ -62,6 +63,7 @@ const STREAMING_SIGNIFICANT_DELTA_CHARS = 18;
 const FEISHU_STREAMING_TOKEN_DEFAULT_LIFETIME_SECONDS = 7200;
 
 // Token cache (keyed by domain + appId)
+const STREAMING_TOKEN_CACHE_MAX_ENTRIES = 256;
 const tokenCache = new Map<string, { token: string; expiresAt: number }>();
 
 function resolveStreamingTokenExpiresAt(value: unknown, nowMs = Date.now()): number {
@@ -142,10 +144,14 @@ async function getToken(creds: Credentials, deps?: FeishuStreamingDeps): Promise
   if (data.code !== 0 || !data.tenant_access_token) {
     throw new Error(`Token error: ${data.msg}`);
   }
+  if (tokenCache.has(key)) {
+    tokenCache.delete(key);
+  }
   tokenCache.set(key, {
     token: data.tenant_access_token,
     expiresAt: resolveStreamingTokenExpiresAt(data.expire, now),
   });
+  pruneMapToMaxSize(tokenCache, STREAMING_TOKEN_CACHE_MAX_ENTRIES);
   return data.tenant_access_token;
 }
 
@@ -221,6 +227,10 @@ export function resolveStreamingCardSendMode(options?: StreamingStartOptions) {
 }
 
 /** Streaming card session manager */
+export function resetFeishuStreamingTokenCacheForTests(): void {
+  tokenCache.clear();
+}
+
 export class FeishuStreamingSession {
   private client: Client;
   private creds: Credentials;

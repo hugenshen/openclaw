@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FEISHU_JSON_MAX_BYTES } from "./json-response.js";
 import {
   FeishuStreamingSession,
+  resetFeishuStreamingTokenCacheForTests,
   type FeishuStreamingFetch,
   mergeStreamingText,
   resolveStreamingCardSendMode,
@@ -208,6 +209,7 @@ function setStreamingSessionInternals(
 describe("FeishuStreamingSession", () => {
   beforeEach(() => {
     vi.useRealTimers();
+    resetFeishuStreamingTokenCacheForTests();
   });
 
   afterEach(async () => {
@@ -855,6 +857,42 @@ describe("FeishuStreamingSession", () => {
 
     expect(authTokens).toEqual(["token-1", "token-2"]);
     dateNow.mockRestore();
+  });
+
+  it("evicts oldest streaming token cache entries once the cache exceeds its cap", async () => {
+    const { authTokens, client, deps } = mockStreamingTokenStart((token) => ({
+      code: 0,
+      msg: "ok",
+      tenant_access_token: token,
+      expire: 7200,
+    }));
+
+    await new FeishuStreamingSession(
+      client,
+      { appId: "app-first", appSecret: "secret" },
+      undefined,
+      deps,
+    ).start("chat_id", "open_id");
+    expect(authTokens).toHaveLength(1);
+
+    for (let i = 1; i <= 256; i += 1) {
+      await new FeishuStreamingSession(
+        client,
+        { appId: `app-fill-${i}`, appSecret: "secret" },
+        undefined,
+        deps,
+      ).start("chat_id", "open_id");
+    }
+    expect(authTokens).toHaveLength(257);
+
+    authTokens.length = 0;
+    await new FeishuStreamingSession(
+      client,
+      { appId: "app-first", appSecret: "secret" },
+      undefined,
+      deps,
+    ).start("chat_id", "open_id");
+    expect(authTokens).toEqual(["token-1"]);
   });
 });
 

@@ -1,3 +1,4 @@
+import { pruneMapToMaxSize } from "openclaw/plugin-sdk/collection-runtime";
 // Feishu plugin module implements bot sender name behavior.
 import {
   asDateTimestampMs,
@@ -29,7 +30,16 @@ const FEISHU_SCOPE_CORRECTIONS: Record<string, string> = {
   "contact:contact.base:readonly": "contact:user.base:readonly",
 };
 const SENDER_NAME_TTL_MS = 10 * 60 * 1000;
+const SENDER_NAME_CACHE_MAX_ENTRIES = 500;
 const senderNameCache = new Map<string, { name: string; expireAt: number }>();
+
+function cacheFeishuSenderName(senderId: string, name: string, expireAt: number): void {
+  if (senderNameCache.has(senderId)) {
+    senderNameCache.delete(senderId);
+  }
+  senderNameCache.set(senderId, { name, expireAt });
+  pruneMapToMaxSize(senderNameCache, SENDER_NAME_CACHE_MAX_ENTRIES);
+}
 
 function correctFeishuScopeInUrl(url: string): string {
   let corrected = url;
@@ -116,7 +126,7 @@ export async function resolveFeishuSenderName(params: {
     if (name) {
       const expireAt = resolveExpiresAtMsFromDurationMs(SENDER_NAME_TTL_MS);
       if (expireAt !== undefined) {
-        senderNameCache.set(normalizedSenderId, { name, expireAt });
+        cacheFeishuSenderName(normalizedSenderId, name, expireAt);
       }
       return { name };
     }
@@ -134,4 +144,8 @@ export async function resolveFeishuSenderName(params: {
     log(`feishu: failed to resolve sender name for ${normalizedSenderId}: ${String(err)}`);
     return {};
   }
+}
+
+export function resetFeishuSenderNameCacheForTests(): void {
+  senderNameCache.clear();
 }

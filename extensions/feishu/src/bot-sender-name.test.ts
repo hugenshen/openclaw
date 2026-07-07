@@ -1,6 +1,6 @@
 // Feishu tests cover bot sender name plugin behavior.
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { resolveFeishuSenderName } from "./bot-sender-name.js";
+import { resetFeishuSenderNameCacheForTests, resolveFeishuSenderName } from "./bot-sender-name.js";
 import { FeishuConfigSchema } from "./config-schema.js";
 import type { ResolvedFeishuAccount } from "./types.js";
 
@@ -35,6 +35,7 @@ function mockUserNames(...names: string[]): ReturnType<typeof vi.fn> {
 describe("resolveFeishuSenderName", () => {
   afterEach(() => {
     vi.useRealTimers();
+    resetFeishuSenderNameCacheForTests();
     createFeishuClientMock.mockReset();
   });
 
@@ -64,5 +65,21 @@ describe("resolveFeishuSenderName", () => {
     ).resolves.toEqual({ name: "Grace" });
 
     expect(get).toHaveBeenCalledTimes(2);
+  });
+
+  it("evicts oldest sender name cache entries once the cache exceeds its cap", async () => {
+    const get = mockUserNames(...Array.from({ length: 502 }, (_, index) => `User ${index}`));
+
+    await resolveFeishuSenderName({ account, senderId: "ou_first", log: vi.fn() });
+    expect(get).toHaveBeenCalledTimes(1);
+
+    for (let i = 1; i <= 500; i += 1) {
+      await resolveFeishuSenderName({ account, senderId: `ou_fill_${i}`, log: vi.fn() });
+    }
+    expect(get).toHaveBeenCalledTimes(501);
+
+    get.mockClear();
+    await resolveFeishuSenderName({ account, senderId: "ou_first", log: vi.fn() });
+    expect(get).toHaveBeenCalledTimes(1);
   });
 });

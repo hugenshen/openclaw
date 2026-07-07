@@ -198,6 +198,29 @@ describe("deliverMatrixReplies", () => {
     expect(sendOptions(0).cfg).toBe(cfg);
   });
 
+  it("suppresses namespaced reasoning tags (mm: and antml: prefixes) before Matrix sends", async () => {
+    // Construct tag strings to prevent tool from interpreting them as XML
+    const mm = "mm";
+    const ant = "antml";
+    await deliverMatrixReplies({
+      cfg,
+      replies: [
+        { text: `<${mm}:think>MiniMax reasoning</${mm}:think>` },
+        { text: `<${ant}:thinking>Anthropic reasoning</${ant}:thinking>` },
+        { text: "Visible answer" },
+      ],
+      roomId: "room:6",
+      client: {} as MatrixClient,
+      runtime: runtimeEnv,
+      textLimit: 4000,
+      replyToMode: "off",
+    });
+
+    expect(sendMessageMatrixMock).toHaveBeenCalledTimes(1);
+    expect(sendCall(0)[0]).toBe("room:6");
+    expect(sendCall(0)[1]).toBe("Visible answer");
+  });
+
   it("uses supplied cfg for chunking and send delivery without reloading runtime config", async () => {
     const explicitCfg = {
       channels: {
@@ -244,14 +267,14 @@ describe("deliverMatrixReplies", () => {
     await deliverMatrixReplies({
       cfg,
       replies: [{ text: "caption", mediaUrl: "https://example.com/a.jpg" }],
-      roomId: "room:6",
+      roomId: "room:7",
       client: {} as MatrixClient,
       runtime: runtimeEnv,
       textLimit: 4000,
       replyToMode: "off",
     });
 
-    expect(sendCall(0)[0]).toBe("room:6");
+    expect(sendCall(0)[0]).toBe("room:7");
     expect(sendCall(0)[1]).toBe("caption");
     expect(sendOptions(0).mediaUrl).toBe("https://example.com/a.jpg");
   });

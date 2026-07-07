@@ -307,6 +307,8 @@ describe("exec-policy CLI", () => {
 
     expect(mocks.defaultRuntime.writeJson).toHaveBeenCalledTimes(1);
     const payload = readLastJsonWrite();
+    const effectivePolicy = payload.effectivePolicy as { note?: unknown } | undefined;
+    expect(String(effectivePolicy?.note)).toContain(SESSION_EXEC_OVERRIDES_NOTE);
     expectFields(payload, {
       configPath: "/tmp/openclaw.json",
       approvalsPath: "/tmp/exec-approvals.json",
@@ -460,6 +462,7 @@ describe("exec-policy CLI", () => {
     expect(output).toContain("host=auto");
     expect(output).toContain("tools.exec.");
     expect(output).toContain("host)");
+    expect(output).toContain(SESSION_EXEC_OVERRIDES_NOTE);
     expect(output).toContain("\\nforged");
     expect(output).not.toContain("/tmp/openclaw.json\nforged");
     expect(output).not.toContain("\u001B[2J");

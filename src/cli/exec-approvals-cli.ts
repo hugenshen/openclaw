@@ -30,6 +30,9 @@ import { nodesCallOpts, resolveNodeId } from "./nodes-cli/rpc.js";
 import type { NodesRpcOpts } from "./nodes-cli/types.js";
 import { applyParentDefaultHelpAction } from "./program/parent-default-help.js";
 
+const SESSION_EXEC_OVERRIDES_NOTE =
+  "Per-session /exec overrides are not included; send /exec in the target chat or cron session to inspect them.";
+
 type FileExecApprovalsSnapshot = {
   path: string;
   exists: boolean;
@@ -413,7 +416,9 @@ function buildEffectivePolicyReport(params: {
         hostDefaults: params.resolvedDefaults,
         hostDefaultSource: "node-reported resolved defaults",
       }),
-      note: "Effective exec policy is the node host approvals file intersected with gateway tools.exec policy.",
+      note:
+        "Effective exec policy is the node host approvals file intersected with gateway tools.exec policy. " +
+        SESSION_EXEC_OVERRIDES_NOTE,
     };
   }
   if (!cfg) {
@@ -428,7 +433,9 @@ function buildEffectivePolicyReport(params: {
       approvals: params.approvals,
       hostPath: params.hostPath,
     }),
-    note: "Effective exec policy is the host approvals file intersected with requested tools.exec policy.",
+    note:
+      "Effective exec policy is the host approvals file intersected with requested tools.exec policy. " +
+      SESSION_EXEC_OVERRIDES_NOTE,
   };
 }
 

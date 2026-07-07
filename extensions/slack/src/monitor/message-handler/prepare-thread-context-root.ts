@@ -1,4 +1,6 @@
 // Slack plugin module implements prepare thread context root behavior.
+import { truncateUtf16Safe } from "openclaw/plugin-sdk/text-utility-runtime";
+
 export type SlackBotAuthorIdentity = {
   botUserId?: string;
   botId?: string;
@@ -107,7 +109,7 @@ export function formatSlackBotStarterThreadLabel(params: {
   if (!params.starterText) {
     return base;
   }
-  const snippet = params.starterText.replace(/\s+/g, " ").slice(0, 80).trim();
+  const snippet = truncateUtf16Safe(params.starterText.replace(/\s+/g, " "), 80).trim();
   if (!snippet) {
     return base;
   }

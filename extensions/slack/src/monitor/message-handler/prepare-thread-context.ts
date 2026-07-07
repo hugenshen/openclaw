@@ -8,6 +8,7 @@ import {
   filterSupplementalContextItems,
   shouldIncludeSupplementalContext,
 } from "openclaw/plugin-sdk/security-runtime";
+import { truncateUtf16Safe } from "openclaw/plugin-sdk/text-utility-runtime";
 import type { ResolvedSlackAccount } from "../../accounts.js";
 import type { SlackMessageEvent } from "../../types.js";
 import { resolveSlackAllowListMatch } from "../allow-list.js";
@@ -224,7 +225,7 @@ export async function resolveSlackThreadContextData(params: {
 
   if (starter?.text && includeStarterContext) {
     threadStarterBody = starter.text;
-    const snippet = starter.text.replace(/\s+/g, " ").slice(0, 80);
+    const snippet = truncateUtf16Safe(starter.text.replace(/\s+/g, " "), 80);
     threadLabel = `Slack thread ${params.roomLabel}${snippet ? `: ${snippet}` : ""}`;
     // Root media seeds a new thread session once. Rehydrating it later makes
     // old files look like current-turn uploads and repeats media processing.

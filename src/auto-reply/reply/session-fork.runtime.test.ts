@@ -2,8 +2,9 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SessionEntry } from "../../config/sessions/types.js";
+import * as sessionUtilsFs from "../../gateway/session-utils.fs.js";
 import { resolveParentForkTokenCountRuntime } from "./session-fork.runtime.js";
 
 const roots: string[] = [];
@@ -15,6 +16,8 @@ async function makeRoot(prefix: string): Promise<string> {
 }
 
 afterEach(async () => {
+  vi.useRealTimers();
+  vi.restoreAllMocks();
   await Promise.all(roots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true })));
 });
 
@@ -362,5 +365,97 @@ describe("resolveParentForkTokenCountRuntime", () => {
 
     expect(tokens).toBeGreaterThan(100_000);
     expect(tokens).toBeLessThan(110_000);
+  });
+
+  it("falls back to cached parent tokens when transcript usage hangs", async () => {
+    vi.useFakeTimers();
+    const root = await makeRoot("openclaw-parent-fork-timeout-cached-");
+    const sessionsDir = path.join(root, "sessions");
+    await fs.mkdir(sessionsDir);
+
+    const sessionId = "parent-timeout-cached";
+    const sessionFile = path.join(sessionsDir, "parent.jsonl");
+    await fs.writeFile(
+      sessionFile,
+      [
+        JSON.stringify({
+          type: "session",
+          version: 3,
+          id: sessionId,
+          timestamp: new Date().toISOString(),
+          cwd: process.cwd(),
+        }),
+      ].join("\n"),
+      "utf-8",
+    );
+    vi.spyOn(sessionUtilsFs, "readLatestRecentSessionUsageFromTranscriptAsync").mockImplementation(
+      () => new Promise(() => {}),
+    );
+
+    const tokensPromise = resolveParentForkTokenCountRuntime({
+      parentEntry: {
+        sessionId,
+        sessionFile,
+        updatedAt: Date.now(),
+        totalTokens: 4_567,
+        totalTokensFresh: false,
+      },
+      storePath: path.join(root, "sessions.json"),
+    });
+
+    await vi.advanceTimersByTimeAsync(2_000);
+
+    await expect(tokensPromise).resolves.toBe(4_567);
+  });
+
+  it("keeps the byte estimate when transcript usage times out after stat succeeds", async () => {
+    vi.useFakeTimers();
+    const root = await makeRoot("openclaw-parent-fork-timeout-bytes-");
+    const sessionsDir = path.join(root, "sessions");
+    await fs.mkdir(sessionsDir);
+
+    const sessionId = "parent-timeout-bytes";
+    const sessionFile = path.join(sessionsDir, "parent.jsonl");
+    const lines = [
+      JSON.stringify({
+        type: "session",
+        version: 3,
+        id: sessionId,
+        timestamp: new Date().toISOString(),
+        cwd: process.cwd(),
+      }),
+    ];
+    for (let index = 0; index < 24; index += 1) {
+      lines.push(
+        JSON.stringify({
+          type: "message",
+          id: `u${index}`,
+          parentId: index === 0 ? null : `a${index - 1}`,
+          timestamp: new Date().toISOString(),
+          message: { role: "user", content: `turn-${index} ${"x".repeat(24_000)}` },
+        }),
+      );
+    }
+    await fs.writeFile(sessionFile, `${lines.join("\n")}\n`, "utf-8");
+    vi.spyOn(sessionUtilsFs, "readLatestRecentSessionUsageFromTranscriptAsync").mockImplementation(
+      () => new Promise(() => {}),
+    );
+    const stat = await fs.stat(sessionFile);
+    vi.spyOn(fs, "stat").mockResolvedValue(stat);
+    const expected = Math.ceil(stat.size / 4);
+
+    const tokensPromise = resolveParentForkTokenCountRuntime({
+      parentEntry: {
+        sessionId,
+        sessionFile,
+        updatedAt: Date.now(),
+        totalTokensFresh: false,
+      },
+      storePath: path.join(root, "sessions.json"),
+    });
+
+    await vi.advanceTimersByTimeAsync(2_000);
+
+    await expect(tokensPromise).resolves.toBe(expected);
   });
 });

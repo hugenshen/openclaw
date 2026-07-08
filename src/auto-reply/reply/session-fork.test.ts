@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
-import { forkSessionEntryFromParent } from "./session-fork.js";
+import { forkSessionEntryFromParent, resolveParentForkDecision } from "./session-fork.js";
 
 const runtimeMocks = vi.hoisted(() => ({
   resolveParentForkTokenCountRuntime: vi.fn(),
@@ -99,5 +99,26 @@ describe("forkSessionEntryFromParent", () => {
     >;
     expect(stored[sessionKey]?.sessionId).toBe(result.fork.sessionId);
     expect(stored[sessionKey]?.sessionFile).toBe(result.fork.sessionFile);
+  });
+});
+
+describe("resolveParentForkDecision", () => {
+  it("keeps forking when the runtime cannot produce a bounded parent token count", async () => {
+    runtimeMocks.resolveParentForkTokenCountRuntime.mockResolvedValue(undefined);
+
+    await expect(
+      resolveParentForkDecision({
+        parentEntry: {
+          sessionId: "parent-session",
+          sessionFile: "/tmp/parent.jsonl",
+          updatedAt: Date.now(),
+          totalTokensFresh: false,
+        },
+        storePath: "/tmp/sessions.json",
+      }),
+    ).resolves.toEqual({
+      status: "fork",
+      maxTokens: 100_000,
+    });
   });
 });

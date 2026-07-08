@@ -14,8 +14,10 @@ import {
   type SessionEntry as StoreSessionEntry,
 } from "../../config/sessions/types.js";
 import { readLatestRecentSessionUsageFromTranscriptAsync } from "../../gateway/session-utils.fs.js";
+import { withTimeout } from "../../utils/with-timeout.js";
 
 const FALLBACK_TRANSCRIPT_BYTES_PER_TOKEN = 4;
+const PARENT_FORK_TOKEN_COUNT_TIMEOUT_MS = 2_000;
 
 function resolvePositiveTokenCount(value: number | undefined): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value > 0
@@ -61,44 +63,60 @@ export async function resolveParentForkTokenCountRuntime(params: {
     return freshPersistedTokens;
   }
 
-  const cachedTokens = resolvePositiveTokenCount(params.parentEntry.totalTokens);
-  const byteEstimateTokens = await estimateParentTranscriptTokensFromBytes(params);
+  let bestEffortTokens = resolvePositiveTokenCount(params.parentEntry.totalTokens);
   try {
-    const usage = await readLatestRecentSessionUsageFromTranscriptAsync(
-      params.parentEntry.sessionId,
-      params.storePath,
-      params.parentEntry.sessionFile,
-      undefined,
-      1024 * 1024,
+    return await withTimeout(
+      (async () => {
+        const byteEstimateTokens = await estimateParentTranscriptTokensFromBytes(params);
+        bestEffortTokens = maxPositiveTokenCount(bestEffortTokens, byteEstimateTokens);
+        const usage = await readLatestRecentSessionUsageFromTranscriptAsync(
+          params.parentEntry.sessionId,
+          params.storePath,
+          params.parentEntry.sessionFile,
+          undefined,
+          1024 * 1024,
+        );
+        let transcriptTokens: number | undefined;
+        if (usage?.contextUsage?.state === "available") {
+          const trailingTokens = Math.ceil(
+            (usage.trailingBytes ?? 0) / FALLBACK_TRANSCRIPT_BYTES_PER_TOKEN,
+          );
+          transcriptTokens = resolvePositiveTokenCount(
+            usage.contextUsage.totalTokens + trailingTokens,
+          );
+          if (typeof transcriptTokens === "number") {
+            return transcriptTokens;
+          }
+        } else if (usage?.contextUsage?.state !== "unavailable") {
+          const promptTokens = resolvePositiveTokenCount(
+            derivePromptTokens({
+              input: usage?.inputTokens,
+              cacheRead: usage?.cacheRead,
+              cacheWrite: usage?.cacheWrite,
+            }),
+          );
+          const outputTokens = resolvePositiveTokenCount(usage?.outputTokens);
+          if (typeof promptTokens === "number") {
+            transcriptTokens = promptTokens + (outputTokens ?? 0);
+          }
+        }
+        if (typeof transcriptTokens === "number") {
+          return maxPositiveTokenCount(transcriptTokens, bestEffortTokens);
+        }
+        return bestEffortTokens;
+      })(),
+      PARENT_FORK_TOKEN_COUNT_TIMEOUT_MS,
+      {
+        createError: () =>
+          new Error(
+            `parent fork token count timed out after ${PARENT_FORK_TOKEN_COUNT_TIMEOUT_MS}ms`,
+          ),
+      },
     );
-    let transcriptTokens: number | undefined;
-    if (usage?.contextUsage?.state === "available") {
-      const trailingTokens = Math.ceil(
-        (usage.trailingBytes ?? 0) / FALLBACK_TRANSCRIPT_BYTES_PER_TOKEN,
-      );
-      transcriptTokens = resolvePositiveTokenCount(usage.contextUsage.totalTokens + trailingTokens);
-      if (typeof transcriptTokens === "number") {
-        return transcriptTokens;
-      }
-    } else if (usage?.contextUsage?.state !== "unavailable") {
-      const promptTokens = resolvePositiveTokenCount(
-        derivePromptTokens({
-          input: usage?.inputTokens,
-          cacheRead: usage?.cacheRead,
-          cacheWrite: usage?.cacheWrite,
-        }),
-      );
-      const outputTokens = resolvePositiveTokenCount(usage?.outputTokens);
-      if (typeof promptTokens === "number") {
-        transcriptTokens = promptTokens + (outputTokens ?? 0);
-      }
-    }
-    if (typeof transcriptTokens === "number") {
-      return maxPositiveTokenCount(transcriptTokens, cachedTokens, byteEstimateTokens);
-    }
   } catch {
-    // Fall back to cached totals when recent transcript usage cannot be read.
+    // Keep parent-fork session creation moving even when transcript metadata
+    // reads stall; the caller can still use cached or size-based estimates.
   }
 
-  return maxPositiveTokenCount(cachedTokens, byteEstimateTokens);
+  return bestEffortTokens;
 }

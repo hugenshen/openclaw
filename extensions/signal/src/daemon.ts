@@ -73,6 +73,14 @@ function bindSignalCliOutput(params: {
       }
     }
   });
+  // Without this handler an 'error' event on the stream (broken pipe, abrupt
+  // child termination, fd close while data is buffered) becomes an unhandled
+  // Node.js EventEmitter error and crashes the gateway process. The child
+  // 'exit'/'close' listeners on spawnSignalDaemon already cover the process
+  // lifecycle; the stream error only needs to be logged, not re-throw.
+  params.stream?.on("error", (err) => {
+    params.error(`signal-cli stdio error: ${String(err)}`);
+  });
 }
 
 function resolveSignalCliConfigPath(raw: string): string {
@@ -178,4 +186,5 @@ export const testApi = {
   buildDaemonArgs,
   classifySignalCliLogLine,
   resolveSignalCliConfigPath,
+  bindSignalCliOutput,
 } as const;

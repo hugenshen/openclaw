@@ -1,6 +1,7 @@
 package ai.openclaw.app.ui
 
 import ai.openclaw.app.AndroidLicenseNotice
+import ai.openclaw.app.AppLanguage
 import ai.openclaw.app.AppearanceThemeMode
 import ai.openclaw.app.BuildConfig
 import ai.openclaw.app.GatewayAgentSummary
@@ -17,7 +18,10 @@ import ai.openclaw.app.LocationMode
 import ai.openclaw.app.MainViewModel
 import ai.openclaw.app.NotificationPackageFilterMode
 import ai.openclaw.app.SensitiveFeatureConfig
+import ai.openclaw.app.appLanguageRowSubtitle
 import ai.openclaw.app.chat.ChatPendingToolCall
+import ai.openclaw.app.currentAppLanguage
+import ai.openclaw.app.currentSystemLanguageTag
 import ai.openclaw.app.gateway.GatewayRegistryEntryKind
 import ai.openclaw.app.gatewayTalkSetupDescription
 import ai.openclaw.app.gatewayTalkSetupStatusText
@@ -27,6 +31,7 @@ import ai.openclaw.app.loadAndroidLicenseNotices
 import ai.openclaw.app.locationModeAfterBackgroundSettings
 import ai.openclaw.app.node.DeviceNotificationListenerService
 import ai.openclaw.app.photoReadPermissionsForRequest
+import ai.openclaw.app.setAppLanguage
 import ai.openclaw.app.ui.design.ClawDetailRow
 import ai.openclaw.app.ui.design.ClawIconBadge
 import ai.openclaw.app.ui.design.ClawListItem
@@ -96,6 +101,7 @@ import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Mic
@@ -151,6 +157,7 @@ internal enum class SettingsRoute {
   CronJobs,
   Usage,
   Skills,
+  SkillWorkshop,
   NodesDevices,
   Channels,
   Dreaming,
@@ -184,6 +191,7 @@ internal fun SettingsDetailScreen(
     SettingsRoute.CronJobs -> CronJobsSettingsScreen(viewModel = viewModel, onBack = onBack)
     SettingsRoute.Usage -> UsageSettingsScreen(viewModel = viewModel, onBack = onBack)
     SettingsRoute.Skills -> SkillsSettingsScreen(viewModel = viewModel, onBack = onBack)
+    SettingsRoute.SkillWorkshop -> SkillWorkshopSettingsScreen(viewModel = viewModel, onBack = onBack)
     SettingsRoute.NodesDevices -> NodesDevicesSettingsScreen(viewModel = viewModel, onBack = onBack)
     SettingsRoute.Channels -> ChannelsSettingsScreen(viewModel = viewModel, onBack = onBack)
     SettingsRoute.Dreaming -> DreamingSettingsScreen(viewModel = viewModel, onBack = onBack)
@@ -1156,6 +1164,13 @@ private fun GatewaySettingsScreen(
   var showSetupCodeHelp by remember { mutableStateOf(false) }
   var pendingSetupResetPlan by remember { mutableStateOf<GatewayConnectPlan?>(null) }
   var pendingForgetStableId by remember { mutableStateOf<String?>(null) }
+  val transport =
+    remember(hostInput, tlsInput) {
+      gatewayManualTransportPresentation(
+        hostInput = hostInput,
+        requestedTls = tlsInput,
+      )
+    }
 
   fun saveAndConnect(plan: GatewayConnectPlan) {
     validationText = null
@@ -1308,11 +1323,26 @@ private fun GatewaySettingsScreen(
           ClawTextField(value = hostInput, onValueChange = { hostInput = it }, placeholder = "Host", modifier = Modifier.weight(1f))
           ClawTextField(value = portInput, onValueChange = { portInput = it }, placeholder = "Port", modifier = Modifier.weight(0.62f))
         }
+        Text(text = "Connection security", style = ClawTheme.type.caption, color = ClawTheme.colors.textMuted)
+        val securityOptions = listOf("Unencrypted", "Secure (TLS)")
         ClawSegmentedControl(
-          options = listOf("Local", "TLS"),
-          selected = if (tlsInput) "TLS" else "Local",
-          onSelect = { selected -> tlsInput = selected == "TLS" },
+          options = securityOptions,
+          selected = if (transport.effectiveTls) "Secure (TLS)" else "Unencrypted",
+          onSelect = { selected -> tlsInput = selected == "Secure (TLS)" },
+          enabledOptions =
+            if (transport.requiresTls) {
+              setOf("Secure (TLS)")
+            } else {
+              securityOptions.toSet()
+            },
         )
+        transport.helperText?.let { helperText ->
+          Text(
+            text = helperText,
+            style = ClawTheme.type.caption,
+            color = ClawTheme.colors.textMuted,
+          )
+        }
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
           ClawTextField(value = tokenInput, onValueChange = { tokenInput = it }, placeholder = "Token", modifier = Modifier.weight(1f))
           ClawTextField(value = bootstrapTokenInput, onValueChange = { bootstrapTokenInput = it }, placeholder = "Bootstrap", modifier = Modifier.weight(1.05f))
@@ -1333,7 +1363,7 @@ private fun GatewaySettingsScreen(
                 savedManualTls = manualTls,
                 manualHostInput = hostInput,
                 manualPortInput = portInput,
-                manualTlsInput = tlsInput,
+                manualTlsInput = transport.effectiveTls,
                 tokenInput = tokenInput,
                 bootstrapTokenInput = bootstrapTokenInput,
                 passwordInput = passwordInput,
@@ -1361,12 +1391,16 @@ private fun AppearanceSettingsScreen(
   onBack: () -> Unit,
 ) {
   val themeMode by viewModel.appearanceThemeMode.collectAsState()
+  val context = LocalContext.current
+  var appLanguage by remember { mutableStateOf(currentAppLanguage()) }
+  val systemLanguageTag = currentSystemLanguageTag(context)
 
-  SettingsDetailFrame(title = "Appearance", subtitle = "A calm, high-contrast OpenClaw interface.", icon = Icons.Default.Palette, onBack = onBack) {
+  SettingsDetailFrame(title = "Appearance", subtitle = "Theme and translated Android text.", icon = Icons.Default.Palette, onBack = onBack) {
     SettingsMetricPanel(
       rows =
         listOf(
           SettingsMetric("Theme", appearanceThemeSummary(themeMode)),
+          SettingsMetric("Language", appLanguage.displayName),
           SettingsMetric("Contrast", "High"),
           SettingsMetric("Typography", "Readable"),
         ),
@@ -1381,7 +1415,57 @@ private fun AppearanceSettingsScreen(
         )
       }
     }
+    ClawPanel {
+      Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(text = "App language", style = ClawTheme.type.section, color = ClawTheme.colors.text)
+        Text(
+          text = "Changes Android text that OpenClaw has translated. Screens with English-only copy stay unchanged.",
+          style = ClawTheme.type.caption,
+          color = ClawTheme.colors.textMuted,
+        )
+        AppLanguage.entries.forEachIndexed { index, language ->
+          if (index > 0) HorizontalDivider(color = ClawTheme.colors.border)
+          AppLanguageRow(
+            language = language,
+            selected = language == appLanguage,
+            systemLanguageTag = systemLanguageTag,
+            onClick = {
+              appLanguage = language
+              setAppLanguage(language)
+            },
+          )
+        }
+      }
+    }
   }
+}
+
+@Composable
+private fun AppLanguageRow(
+  language: AppLanguage,
+  selected: Boolean,
+  systemLanguageTag: String,
+  onClick: () -> Unit,
+) {
+  ClawListItem(
+    title = language.displayName,
+    subtitle = appLanguageRowSubtitle(language = language, systemLanguageTag = systemLanguageTag),
+    leading = { ClawIconBadge(Icons.Default.Language) },
+    trailing =
+      if (selected) {
+        {
+          Icon(
+            imageVector = Icons.Default.Check,
+            contentDescription = "Selected",
+            modifier = Modifier.size(18.dp),
+            tint = ClawTheme.colors.primary,
+          )
+        }
+      } else {
+        null
+      },
+    onClick = onClick,
+  )
 }
 
 internal fun appearanceThemeSummary(mode: AppearanceThemeMode): String = mode.displayLabel

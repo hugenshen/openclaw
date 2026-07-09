@@ -151,6 +151,35 @@ describe("Anthropic provider", () => {
     expect(config.defaultHeaders?.["x-api-key"]).toBeUndefined();
   });
 
+  it("keeps sentinel-backed Foundry Authorization headers on bearer routing", async () => {
+    const sentinel = "oc-sent-v2.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA.end";
+    configureAiTransportHost({
+      buildModelFetch: () => async () => new Response(null, { status: 500 }),
+      resolveSecretSentinel: (value) => value.replaceAll(sentinel, "Bearer entra-access-token"),
+    });
+    const model = makeAnthropicModel({
+      provider: "microsoft-foundry",
+      baseUrl: "https://example.services.ai.azure.com/anthropic",
+      headers: { Authorization: sentinel },
+    });
+
+    streamAnthropic(
+      model,
+      { messages: [{ role: "user", content: "hello", timestamp: 1 }] },
+      {
+        apiKey: sentinel,
+      },
+    );
+
+    await vi.waitFor(() => expect(anthropicMockState.configs).toHaveLength(1));
+    const config = anthropicMockState.configs[0] as {
+      apiKey?: string | null;
+      authToken?: string | null;
+    };
+    expect(config.apiKey).toBeNull();
+    expect(config.authToken).toBe(sentinel);
+  });
+
   it("keeps Microsoft Foundry API-key profiles on Anthropic API key auth", async () => {
     const model = makeAnthropicModel({
       provider: "microsoft-foundry",
@@ -1647,6 +1676,98 @@ describe("Anthropic provider", () => {
     });
     expect((capturedPayload as { output_config?: unknown }).output_config).toBeUndefined();
   });
+
+  it("resolves thinking as disabled when the legacy budget collapses below 1024", async () => {
+    // reasoning:true so the builder enters the thinking block, but an id that
+    // does not match the adaptive-thinking regex so the budget-based path is used.
+    const model = makeAnthropicModel({
+      id: "claude-haiku-4-5",
+      name: "Claude Haiku 4.5",
+      reasoning: true,
+      maxTokens: 1024,
+    });
+    let capturedPayload: unknown;
+    const stream = streamSimpleAnthropic(
+      model,
+      { messages: [{ role: "user", content: "hello", timestamp: 0 }] },
+      {
+        apiKey: "sk-ant-provider",
+        reasoning: "minimal",
+        onPayload: (payload) => {
+          capturedPayload = payload;
+          throw new Error("stop before network");
+        },
+      },
+    );
+    await stream.result();
+    expect((capturedPayload as { thinking?: unknown }).thinking).toEqual({ type: "disabled" });
+  });
+
+  it("resolves thinking as disabled when the legacy budget is positive but sub-minimum", async () => {
+    const model = makeAnthropicModel({
+      id: "claude-haiku-4-5",
+      name: "Claude Haiku 4.5",
+      reasoning: true,
+      maxTokens: 1500,
+    });
+    let capturedPayload: unknown;
+    const stream = streamSimpleAnthropic(
+      model,
+      { messages: [{ role: "user", content: "hello", timestamp: 0 }] },
+      {
+        apiKey: "sk-ant-provider",
+        reasoning: "low",
+        onPayload: (payload) => {
+          capturedPayload = payload;
+          throw new Error("stop before network");
+        },
+      },
+    );
+    await stream.result();
+    expect((capturedPayload as { thinking?: unknown }).thinking).toEqual({ type: "disabled" });
+  });
+
+  it.each([
+    { budgetTokens: 512, maxTokens: 8192 },
+    { budgetTokens: 1024, maxTokens: 1024 },
+  ])(
+    "normalizes raw manual thinking budget $budgetTokens below max $maxTokens",
+    async ({ budgetTokens, maxTokens }) => {
+      const model = makeAnthropicModel({
+        id: "claude-haiku-4-5",
+        name: "Claude Haiku 4.5",
+        maxTokens: 8192,
+      });
+      let capturedPayload: unknown;
+      const stream = streamAnthropic(
+        model,
+        {
+          messages: [{ role: "user", content: "hello", timestamp: 0 }],
+          tools: [{ name: "lookup", description: "Lookup", parameters: { type: "object" } }],
+        },
+        {
+          apiKey: "sk-ant-provider",
+          maxTokens,
+          temperature: 0.2,
+          thinkingEnabled: true,
+          thinkingBudgetTokens: budgetTokens,
+          toolChoice: "any",
+          onPayload: (payload) => {
+            capturedPayload = payload;
+            throw new Error("stop before network");
+          },
+        },
+      );
+
+      await stream.result();
+
+      expect(capturedPayload).toMatchObject({
+        thinking: { type: "disabled" },
+        temperature: 0.2,
+        tool_choice: { type: "any" },
+      });
+    },
+  );
 
   it.each(["claude-opus-4-8", "claude-mythos-preview"])(
     "restores default sampling for %s after payload hooks",

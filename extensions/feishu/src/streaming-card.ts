@@ -10,6 +10,7 @@ import {
 } from "openclaw/plugin-sdk/number-runtime";
 import { fetchWithSsrFGuard, type LookupFn } from "openclaw/plugin-sdk/ssrf-runtime";
 import { sliceUtf16Safe } from "openclaw/plugin-sdk/text-utility-runtime";
+import { FEISHU_HTTP_TIMEOUT_MS } from "./client-timeout.js";
 import { getFeishuUserAgent } from "./client.js";
 import { requestFeishuApi } from "./comment-shared.js";
 import { readFeishuJsonResponse } from "./json-response.js";
@@ -119,6 +120,7 @@ async function getToken(creds: Credentials, deps?: FeishuStreamingDeps): Promise
       method: "POST",
       headers: { "Content-Type": "application/json", "User-Agent": getFeishuUserAgent() },
       body: JSON.stringify({ app_id: creds.appId, app_secret: creds.appSecret }),
+      signal: AbortSignal.timeout(FEISHU_HTTP_TIMEOUT_MS),
     },
     fetchImpl: deps?.fetchImpl,
     lookupFn: deps?.lookupFn,
@@ -299,6 +301,7 @@ export class FeishuStreamingSession {
           "User-Agent": getFeishuUserAgent(),
         },
         body: JSON.stringify({ type: "card_json", data: JSON.stringify(cardJson) }),
+        signal: AbortSignal.timeout(FEISHU_HTTP_TIMEOUT_MS),
       },
       fetchImpl: this.fetchImpl,
       lookupFn: this.lookupFn,
@@ -413,6 +416,7 @@ export class FeishuStreamingSession {
             sequence: this.state.sequence,
             uuid: `s_${this.state.cardId}_${this.state.sequence}`,
           }),
+          signal: AbortSignal.timeout(FEISHU_HTTP_TIMEOUT_MS),
         },
         fetchImpl: this.fetchImpl,
         lookupFn: this.lookupFn,
@@ -458,6 +462,7 @@ export class FeishuStreamingSession {
             sequence: this.state.sequence,
             uuid: `r_${this.state.cardId}_${this.state.sequence}`,
           }),
+          signal: AbortSignal.timeout(FEISHU_HTTP_TIMEOUT_MS),
         },
         fetchImpl: this.fetchImpl,
         lookupFn: this.lookupFn,
@@ -566,6 +571,7 @@ export class FeishuStreamingSession {
           sequence: this.state.sequence,
           uuid: `n_${this.state.cardId}_${this.state.sequence}`,
         }),
+        signal: AbortSignal.timeout(FEISHU_HTTP_TIMEOUT_MS),
       },
       fetchImpl: this.fetchImpl,
       lookupFn: this.lookupFn,
@@ -632,6 +638,7 @@ export class FeishuStreamingSession {
           sequence: this.state.sequence,
           uuid: `c_${this.state.cardId}_${this.state.sequence}`,
         }),
+        signal: AbortSignal.timeout(FEISHU_HTTP_TIMEOUT_MS),
       },
       fetchImpl: this.fetchImpl,
       lookupFn: this.lookupFn,

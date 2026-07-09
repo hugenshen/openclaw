@@ -66,8 +66,30 @@ describe("guardedJsonApiRequest", () => {
       },
       policy: { allowedHostnames: ["api.example.com"] },
       auditContext: "voice-call:test",
+      timeoutMs: 30_000,
     });
     expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it("passes timeoutMs to the SSRF guard on every request", async () => {
+    const release = vi.fn(async () => {});
+    fetchWithSsrFGuardMock.mockResolvedValue({
+      response: new Response(JSON.stringify({}), { status: 200 }),
+      release,
+    });
+
+    await guardedJsonApiRequest({
+      url: "https://api.example.com/v1/resource",
+      method: "GET",
+      headers: {},
+      allowedHostnames: ["api.example.com"],
+      auditContext: "voice-call:test",
+      errorPrefix: "request failed",
+    });
+
+    expect(fetchWithSsrFGuardMock).toHaveBeenCalledWith(
+      expect.objectContaining({ timeoutMs: 30_000 }),
+    );
   });
 
   it("returns undefined for empty bodies and allowed 404s", async () => {

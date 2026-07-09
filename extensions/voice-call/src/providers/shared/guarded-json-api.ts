@@ -8,6 +8,10 @@ import {
 
 // Shared guarded JSON API client for voice-call providers.
 
+// Matches the Twilio-specific REST helper timeout; keeps all voice provider
+// control-plane requests bounded when a remote accepts but never sends a response.
+const PROVIDER_JSON_API_TIMEOUT_MS = 30_000;
+
 /** Parameters for an SSRF-guarded provider JSON request. */
 type GuardedJsonApiRequestParams = {
   url: string;
@@ -33,6 +37,7 @@ export async function guardedJsonApiRequest<T = unknown>(
     },
     policy: { allowedHostnames: params.allowedHostnames },
     auditContext: params.auditContext,
+    timeoutMs: PROVIDER_JSON_API_TIMEOUT_MS,
   });
 
   try {

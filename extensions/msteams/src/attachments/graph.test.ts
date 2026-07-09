@@ -287,6 +287,32 @@ describe("downloadMSTeamsGraphMedia hosted content $value fallback", () => {
       expect((headers as Headers).get("User-Agent")).toMatch(
         /^teams\.ts\[apps\]\/.+ OpenClaw\/.+$/,
       );
+      expect(call.timeoutMs).toBe(30_000);
+    }
+  });
+
+  it("passes timeoutMs to all guarded Graph attachment fetches", async () => {
+    mockGraphMediaFetch({
+      messageId: "msg-timeout",
+      hostedContents: [{ id: "hosted-t1", contentType: "image/png" }],
+      valueResponses: {
+        "/hostedContents/hosted-t1/$value": new Response(
+          Buffer.from([0x89, 0x50, 0x4e, 0x47]) as BodyInit,
+          { status: 200 },
+        ),
+      },
+    });
+
+    await downloadMSTeamsGraphMedia({
+      messageUrl: "https://graph.microsoft.com/v1.0/chats/c/messages/msg-timeout",
+      tokenProvider: { getAccessToken: vi.fn(async () => "test-token") },
+      maxBytes: 10 * 1024 * 1024,
+    });
+
+    const guardCalls = vi.mocked(fetchWithSsrFGuard).mock.calls;
+    expect(guardCalls.length).toBeGreaterThanOrEqual(3);
+    for (const [call] of guardCalls) {
+      expect(call).toMatchObject({ timeoutMs: 30_000 });
     }
   });
 

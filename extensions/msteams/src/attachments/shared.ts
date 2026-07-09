@@ -583,6 +583,9 @@ export async function resolveAndValidateIP(
 
 /** Maximum number of redirects to follow in safeFetch. */
 const MAX_SAFE_REDIRECTS = 5;
+// Keeps the SSRF-guarded attachment download path bounded; a stalled CDN/Graph
+// host can otherwise hold the lane open until the process is restarted.
+const MSTEAMS_ATTACHMENT_FETCH_TIMEOUT_MS = 30_000;
 /**
  * Fetch a URL with redirect: "manual", validating each redirect target
  * against the hostname allowlist and optional DNS-resolved IP (anti-SSRF).
@@ -646,6 +649,7 @@ export async function safeFetch(params: {
       retainAuthorizationRedirectHostnameAllowlist:
         resolveRetainedAuthorizationRedirectHostnameAllowlist(params.authorizationAllowHosts),
       auditContext: "msteams.attachment",
+      timeoutMs: MSTEAMS_ATTACHMENT_FETCH_TIMEOUT_MS,
     });
     return responseWithRelease(guarded.response, guarded.release);
   }

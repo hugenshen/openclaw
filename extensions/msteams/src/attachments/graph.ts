@@ -10,6 +10,10 @@ import {
   normalizeOptionalString,
   uniqueStrings,
 } from "openclaw/plugin-sdk/string-coerce-runtime";
+// Matches the sibling graph.ts top-level GRAPH_REQUEST_TIMEOUT_MS; keeps all
+// Graph API calls in the attachments submodule bounded on accept-but-no-reply.
+const MSTEAMS_GRAPH_ATTACHMENT_TIMEOUT_MS = 30_000;
+
 import { getMSTeamsRuntime } from "../runtime.js";
 import { ensureUserAgentHeader } from "../user-agent.js";
 import { downloadMSTeamsAttachments } from "./download.js";
@@ -138,6 +142,7 @@ async function fetchGraphCollection(params: {
     },
     policy: params.ssrfPolicy,
     auditContext: "msteams.graph.collection",
+    timeoutMs: MSTEAMS_GRAPH_ATTACHMENT_TIMEOUT_MS,
   });
   try {
     const status = response.status;
@@ -218,6 +223,7 @@ async function downloadGraphHostedContent(params: {
         },
         policy: params.ssrfPolicy,
         auditContext: "msteams.graph.hostedContent.value",
+        timeoutMs: MSTEAMS_GRAPH_ATTACHMENT_TIMEOUT_MS,
       });
       try {
         if (!valRes.ok) {
@@ -303,6 +309,7 @@ export async function downloadMSTeamsGraphMedia(params: {
       },
       policy: ssrfPolicy,
       auditContext: "msteams.graph.message",
+      timeoutMs: MSTEAMS_GRAPH_ATTACHMENT_TIMEOUT_MS,
     });
     try {
       messageStatus = msgRes.status;

@@ -61,6 +61,25 @@ struct SwiftUIRenderSmokeTests {
         }
     }
 
+    @Test @MainActor func `settings Privacy destination builds across appearance and type size`() {
+        for scheme in [ColorScheme.light, ColorScheme.dark] {
+            for typeSize in [DynamicTypeSize.large, .accessibility2] {
+                let appModel = NodeAppModel()
+                let gatewayController = GatewayConnectionController(appModel: appModel, startDiscovery: false)
+
+                let root = SettingsProTab(directRoute: .privacy)
+                    .environment(AppAppearanceModel())
+                    .environment(appModel)
+                    .environment(appModel.voiceWake)
+                    .environment(gatewayController)
+                    .preferredColorScheme(scheme)
+                    .environment(\.dynamicTypeSize, typeSize)
+
+                _ = Self.host(root, size: CGSize(width: 393, height: 852))
+            }
+        }
+    }
+
     @Test @MainActor func `settings Licenses destination builds in light and dark mode`() {
         var windows: [UIWindow] = []
         defer { windows.forEach { $0.isHidden = true } }
@@ -115,6 +134,12 @@ struct SwiftUIRenderSmokeTests {
     @Test @MainActor func `display math builds valid and fallback view hierarchies`() {
         for typeSize in [DynamicTypeSize.large, .accessibility2] {
             let root = VStack {
+                ChatMarkdownRenderer(
+                    text: #"Inline math \(E = mc^2\) stays inside prose."#,
+                    context: .assistant,
+                    variant: .standard,
+                    font: OpenClawChatTypography.body,
+                    textColor: OpenClawChatTheme.assistantText)
                 ChatMathBlockView(block: ChatMathBlock(
                     latex: #"\frac{-b \pm \sqrt{b^2 - 4ac}}{2a}"#,
                     isComplete: true), textColor: OpenClawChatTheme.assistantText)
@@ -137,6 +162,32 @@ struct SwiftUIRenderSmokeTests {
             .environment(\.dynamicTypeSize, typeSize)
 
             _ = Self.host(root, size: CGSize(width: 393, height: 240))
+        }
+    }
+
+    @Test @MainActor func `markdown heading hierarchy builds with inline formatting and table`() {
+        let markdown = """
+        # First **strong** heading
+        ## Second [linked](https://example.com) heading
+        ### Third `code` heading
+        #### Fourth heading
+        ##### Fifth heading
+        ###### Sixth heading
+
+        | Surface | State |
+        | --- | --- |
+        | iOS | Native |
+        """
+        for typeSize in [DynamicTypeSize.large, .accessibility2] {
+            let root = ChatMarkdownRenderer(
+                text: markdown,
+                context: .assistant,
+                variant: .standard,
+                font: OpenClawChatTypography.body,
+                textColor: OpenClawChatTheme.assistantText)
+                .environment(\.dynamicTypeSize, typeSize)
+
+            _ = Self.host(root, size: CGSize(width: 393, height: 700))
         }
     }
 
@@ -182,7 +233,7 @@ struct SwiftUIRenderSmokeTests {
         }
     }
 
-    @Test @MainActor func gatewayQuickSetupBuildsCandidateAndEmptyStates() {
+    @Test @MainActor func `gateway quick setup builds candidate and empty states`() {
         let gateways: [GatewayDiscoveryModel.DiscoveredGateway?] = [
             .previewGateway,
             nil,
@@ -205,7 +256,7 @@ struct SwiftUIRenderSmokeTests {
         }
     }
 
-    @Test @MainActor func onboardingActivationScreensBuildAcrossAppearanceAndTypeSize() {
+    @Test @MainActor func `onboarding activation screens build across appearance and type size`() {
         let screens: [AnyView] = [
             AnyView(OnboardingIntroStep(onContinue: {})),
             AnyView(OnboardingWelcomeStep(

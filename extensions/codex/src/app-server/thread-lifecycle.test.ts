@@ -6,7 +6,11 @@ import type { EmbeddedRunAttemptParams } from "openclaw/plugin-sdk/agent-harness
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CODEX_GPT5_BEHAVIOR_CONTRACT } from "../../prompt-overlay.js";
 import { fingerprintCodexAppServerNetworkProxyConfigPatch } from "./config.js";
-import { testCodexAppServerBindingStore } from "./session-binding.test-helpers.js";
+import { CODEX_OPENCLAW_DIRECT_DYNAMIC_TOOL_NAMESPACE } from "./protocol.js";
+import {
+  resetCodexTestBindingStore,
+  testCodexAppServerBindingStore,
+} from "./session-binding.test-helpers.js";
 import { createCodexTestModel } from "./test-support.js";
 import {
   buildDeveloperInstructions,
@@ -651,6 +655,47 @@ describe("Codex app-server native code mode config", () => {
     });
   });
 
+  it.each([false, true])(
+    "keeps direct-only dynamic namespaces model-visible when code-mode-only=%s",
+    (nativeCodeModeOnlyEnabled) => {
+      const dynamicTools = [
+        {
+          type: "namespace" as const,
+          name: CODEX_OPENCLAW_DIRECT_DYNAMIC_TOOL_NAMESPACE,
+          description: "",
+          tools: [],
+        },
+      ];
+      const config = {
+        "code_mode.direct_only_tool_namespaces": ["vendor_direct"],
+      };
+      const startRequest = buildThreadStartParams(createAttemptParams({ provider: "openai" }), {
+        cwd: "/repo",
+        dynamicTools,
+        appServer: createAppServerOptions() as never,
+        developerInstructions: "test instructions",
+        nativeCodeModeOnlyEnabled,
+        config,
+      });
+      const resumeRequest = buildThreadResumeParams(createAttemptParams({ provider: "openai" }), {
+        threadId: "thread-1",
+        dynamicTools,
+        appServer: createAppServerOptions() as never,
+        developerInstructions: "test instructions",
+        nativeCodeModeOnlyEnabled,
+        config,
+      });
+
+      for (const request of [startRequest, resumeRequest]) {
+        expect(request.config?.["code_mode.direct_only_tool_namespaces"]).toEqual([
+          "vendor_direct",
+          CODEX_OPENCLAW_DIRECT_DYNAMIC_TOOL_NAMESPACE,
+        ]);
+        expect(request.config?.["features.code_mode_only"]).toBe(nativeCodeModeOnlyEnabled);
+      }
+    },
+  );
+
   it("enables Codex code mode on thread/resume", () => {
     const request = buildThreadResumeParams(createAttemptParams({ provider: "openai" }), {
       threadId: "thread-1",
@@ -1194,6 +1239,9 @@ describe("Codex app-server model provider selection", () => {
 describe("Codex app-server thread lifecycle timing", () => {
   beforeEach(async () => {
     tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-codex-thread-lifecycle-"));
+    // Bindings are keyed by session identity, not tempDir, so sibling tests
+    // would otherwise leak resumable threads into fresh-start expectations.
+    resetCodexTestBindingStore();
   });
 
   afterEach(async () => {
@@ -1403,13 +1451,23 @@ describe("resolveReasoningEffort (#71946)", () => {
       expect(resolveReasoningEffort("minimal", " gpt-5.4-mini ")).toBe("low");
     });
 
+    it.each(["gpt-5.5-pro", "gpt-5.4-pro"] as const)(
+      "uses the %s minimum effort when metadata is unavailable",
+      (modelId) => {
+        expect(resolveReasoningEffort("minimal", modelId)).toBe("medium");
+        expect(resolveReasoningEffort("low", modelId)).toBe("medium");
+        expect(resolveReasoningEffort("medium", modelId)).toBe("medium");
+        expect(resolveReasoningEffort("max", modelId)).toBe("xhigh");
+      },
+    );
+
     it("honors stricter app-server reasoning metadata", () => {
       const supported = ["medium", "high", "xhigh"];
 
-      expect(resolveReasoningEffort("minimal", "gpt-5.4-pro", supported)).toBe("medium");
-      expect(resolveReasoningEffort("low", "gpt-5.4-pro", supported)).toBe("medium");
-      expect(resolveReasoningEffort("medium", "gpt-5.4-pro", supported)).toBe("medium");
-      expect(resolveReasoningEffort("max", "gpt-5.4-pro", supported)).toBe("xhigh");
+      expect(resolveReasoningEffort("minimal", "gpt-5.5-pro", supported)).toBe("medium");
+      expect(resolveReasoningEffort("low", "gpt-5.5-pro", supported)).toBe("medium");
+      expect(resolveReasoningEffort("medium", "gpt-5.5-pro", supported)).toBe("medium");
+      expect(resolveReasoningEffort("max", "gpt-5.5-pro", supported)).toBe("xhigh");
     });
   });
 

@@ -909,10 +909,13 @@ struct RootTabs: View {
             .sheet(item: self.$presentedSheet) { sheet in
                 switch sheet {
                 case .quickSetup:
-                    GatewayQuickSetupSheet()
-                        .environment(self.appModel)
-                        .environment(self.gatewayController)
-                        .openClawSheetChrome()
+                    GatewayQuickSetupSheet(onUseManualSetup: {
+                        self.presentedSheet = nil
+                        self.selectSettingsRoute(.gateway)
+                    })
+                    .environment(self.appModel)
+                    .environment(self.gatewayController)
+                    .openClawSheetChrome()
                 }
             }
             .fullScreenCover(isPresented: self.$showOnboarding) {
@@ -1247,7 +1250,7 @@ extension RootTabs {
             }
         } else if problem.canTrustRotatedCertificate {
             Task { await self.gatewayController.trustRotatedGatewayCertificate(from: problem) }
-        } else if GatewayProblemPrimaryAction.openProtocolMismatchHelpIfNeeded(problem) {
+        } else if GatewayProblemPrimaryAction.handleProtocolMismatchIfNeeded(problem) {
             return
         } else if problem.retryable {
             Task { await self.gatewayController.connectActiveGateway() }

@@ -14,9 +14,17 @@ import {
   isMaxReasoningCodexModel,
   isModernCodexModel,
   readCodexSupportedReasoningEfforts,
+  resolveCodexFallbackReasoningEfforts,
   resolveCodexSupportedReasoningEffort,
   type CodexReasoningEffort,
 } from "../../provider.js";
+import {
+  CODEX_APP_SERVER_UNSUBSCRIBE_TIMEOUT_MS,
+  closeCodexStartupClientBestEffort,
+  CodexAppServerUnsafeSubscriptionError,
+  isCodexAppServerUnsafeSubscriptionError,
+  unsubscribeCodexThreadBestEffort,
+} from "./attempt-client-cleanup.js";
 import {
   CodexAppServerRpcError,
   isCodexAppServerConnectionClosedError,
@@ -39,11 +47,9 @@ import {
   type CodexPluginThreadConfig,
 } from "./plugin-thread-config.js";
 import { isCodexAppServerProfilerEnabled } from "./profiler-flag.js";
+import { assertCodexThreadStartResponse } from "./protocol-validators.js";
 import {
-  assertCodexThreadResumeResponse,
-  assertCodexThreadStartResponse,
-} from "./protocol-validators.js";
-import {
+  CODEX_OPENCLAW_DIRECT_DYNAMIC_TOOL_NAMESPACE,
   flattenCodexDynamicToolFunctions,
   isJsonObject,
   type CodexDynamicToolSpec,
@@ -68,6 +74,7 @@ import {
   type CodexAppServerContextEngineProjectionBinding,
   type CodexAppServerThreadBinding,
 } from "./session-binding.js";
+import { resumeCodexAppServerThread } from "./thread-resume.js";
 import { resolveCodexWebSearchPlan, type CodexNativeWebSearchSupport } from "./web-search.js";
 
 export type CodexAppServerThreadLifecycle = {
@@ -300,6 +307,8 @@ function createCodexThreadLifecycleTimingTracker(options: CodexThreadLifecycleTi
 
 export async function startOrResumeThread(params: {
   client: CodexAppServerClient;
+  abandonClient?: () => Promise<void>;
+  reserveResumeThread?: (threadId: string) => { release: () => void };
   bindingStore: CodexAppServerBindingStore;
   params: EmbeddedRunAttemptParams;
   agentId?: string;
@@ -690,6 +699,7 @@ export async function startOrResumeThread(params: {
         }
       } else {
         const resumeBinding = binding;
+        let resumeReservation: { release: () => void } | undefined;
         try {
           const authProfileId = params.params.authProfileId ?? resumeBinding.authProfileId;
           const finalConfigPatch = params.buildFinalConfigPatch?.({
@@ -733,10 +743,20 @@ export async function startOrResumeThread(params: {
             typeof resumeParams.modelProvider === "string" && resumeParams.modelProvider.trim()
               ? resumeParams.modelProvider
               : undefined;
-          const response = assertCodexThreadResumeResponse(
-            await lifecycleTiming.measure("thread-resume-request", () =>
-              params.client.request("thread/resume", resumeParams, { signal: params.signal }),
-            ),
+          // Keep ownership accounting atomic with the resume request: a
+          // pre-aborted request retains no subscription, so it must not reserve.
+          throwIfAborted();
+          resumeReservation = params.reserveResumeThread?.(resumeBinding.threadId);
+          const response = await lifecycleTiming.measure("thread-resume-request", () =>
+            resumeCodexAppServerThread({
+              client: params.client,
+              // Retiring the exact client keeps an indeterminate resume
+              // subscription from ever re-entering the shared pool.
+              abandonClient:
+                params.abandonClient ?? (() => closeCodexStartupClientBestEffort(params.client)),
+              request: resumeParams,
+              signal: params.signal,
+            }),
           );
           throwIfAborted();
           const boundAuthProfileId = authProfileId;
@@ -811,7 +831,32 @@ export async function startOrResumeThread(params: {
             },
           };
         } catch (error) {
-          if (isCodexAppServerConnectionClosedError(error)) {
+          resumeReservation?.release();
+          if (isCodexAppServerUnsafeSubscriptionError(error)) {
+            // The resume client is already retired; a fresh start here would
+            // race the possibly-live subscription on the abandoned process.
+            throw error;
+          }
+          // A structured RPC rejection proves Codex never subscribed the
+          // resume, so the best-effort unsubscribe below is cosmetic for that
+          // case. Only post-acceptance failures must prove the release.
+          const resumeRejected = error instanceof CodexAppServerRpcError;
+          const subscriptionReleased = await unsubscribeCodexThreadBestEffort(params.client, {
+            threadId: resumeBinding.threadId,
+            timeoutMs: CODEX_APP_SERVER_UNSUBSCRIBE_TIMEOUT_MS,
+          });
+          if (
+            !subscriptionReleased &&
+            !resumeRejected &&
+            !isCodexAppServerConnectionClosedError(error) &&
+            !params.signal?.aborted
+          ) {
+            throw new CodexAppServerUnsafeSubscriptionError(
+              "Codex thread/resume subscription cleanup failed",
+              { cause: error },
+            );
+          }
+          if (isCodexAppServerConnectionClosedError(error) || params.signal?.aborted) {
             throw error;
           }
           embeddedAgentLog.warn("codex app-server thread resume failed; starting a new thread", {
@@ -1181,6 +1226,7 @@ export function buildThreadStartParams(
       nativeCodeModeEnabled: options.nativeCodeModeEnabled,
       nativeProviderWebSearchSupport: options.nativeProviderWebSearchSupport,
       nativeCodeModeOnlyEnabled: options.nativeCodeModeOnlyEnabled,
+      directOnlyToolNamespaces: resolveDirectOnlyToolNamespaces(options.dynamicTools),
       webSearchAllowed: options.webSearchAllowed,
       appServer: options.appServer,
     }),
@@ -1242,6 +1288,7 @@ export function buildThreadResumeParams(
       nativeCodeModeEnabled: options.nativeCodeModeEnabled,
       nativeProviderWebSearchSupport: options.nativeProviderWebSearchSupport,
       nativeCodeModeOnlyEnabled: options.nativeCodeModeOnlyEnabled,
+      directOnlyToolNamespaces: resolveDirectOnlyToolNamespaces(options.dynamicTools),
       webSearchAllowed: options.webSearchAllowed,
       appServer: options.appServer,
     }),
@@ -1353,7 +1400,11 @@ function hasProviderQualifiedModelRef(model: string | undefined): boolean {
 
 export function buildCodexRuntimeThreadConfig(
   config: JsonObject | undefined,
-  options: { nativeCodeModeEnabled?: boolean; nativeCodeModeOnlyEnabled?: boolean } = {},
+  options: {
+    nativeCodeModeEnabled?: boolean;
+    nativeCodeModeOnlyEnabled?: boolean;
+    directOnlyToolNamespaces?: readonly string[];
+  } = {},
 ): JsonObject {
   const codeModeConfig: JsonObject = {
     ...CODEX_CODE_MODE_THREAD_CONFIG,
@@ -1372,20 +1423,46 @@ export function buildCodexRuntimeThreadConfig(
     return disabledConfig;
   }
   if (options.nativeCodeModeOnlyEnabled === true) {
-    return (
-      mergeCodexThreadConfigs(codeModeConfig, config, {
-        "features.code_mode_only": true,
-      }) ?? {
-        ...codeModeConfig,
-        "features.code_mode_only": true,
-      }
-    );
-  }
-  return (
-    mergeCodexThreadConfigs(codeModeConfig, config) ?? {
+    const merged = mergeCodexThreadConfigs(codeModeConfig, config, {
+      "features.code_mode_only": true,
+    }) ?? {
       ...codeModeConfig,
-    }
-  );
+      "features.code_mode_only": true,
+    };
+    return ensureDirectOnlyToolNamespaces(merged, options.directOnlyToolNamespaces);
+  }
+  const merged = mergeCodexThreadConfigs(codeModeConfig, config) ?? {
+    ...codeModeConfig,
+  };
+  return ensureDirectOnlyToolNamespaces(merged, options.directOnlyToolNamespaces);
+}
+
+function ensureDirectOnlyToolNamespaces(
+  config: JsonObject,
+  requiredNamespaces: readonly string[] | undefined,
+): JsonObject {
+  if (!requiredNamespaces?.length) {
+    return config;
+  }
+  const configured = config["code_mode.direct_only_tool_namespaces"];
+  const namespaces = Array.isArray(configured)
+    ? configured.filter((entry): entry is string => typeof entry === "string" && entry.length > 0)
+    : [];
+  return {
+    ...config,
+    "code_mode.direct_only_tool_namespaces": [...new Set([...namespaces, ...requiredNamespaces])],
+  };
+}
+
+function resolveDirectOnlyToolNamespaces(
+  dynamicTools: readonly CodexDynamicToolSpec[] | undefined,
+): string[] {
+  return (dynamicTools ?? [])
+    .filter(
+      (tool) =>
+        tool.type === "namespace" && tool.name === CODEX_OPENCLAW_DIRECT_DYNAMIC_TOOL_NAMESPACE,
+    )
+    .map((tool) => tool.name);
 }
 
 function buildCodexRuntimeThreadConfigForRun(
@@ -1395,6 +1472,7 @@ function buildCodexRuntimeThreadConfigForRun(
     nativeCodeModeEnabled?: boolean;
     nativeProviderWebSearchSupport?: CodexNativeWebSearchSupport;
     nativeCodeModeOnlyEnabled?: boolean;
+    directOnlyToolNamespaces?: readonly string[];
     webSearchAllowed?: boolean;
     appServer?: Pick<CodexAppServerRuntimeOptions, "networkProxy">;
   } = {},
@@ -1825,13 +1903,10 @@ export function resolveCodexAppServerModelProvider(params: {
   return normalizedLower === "openai" ? "openai" : normalized;
 }
 
-// Modern Codex models (gpt-5.5, gpt-5.4, gpt-5.4-mini, gpt-5.3-codex-spark) use the
-// none/low/medium/high/xhigh effort enum and reject "minimal". The CLI
-// defaults thinkLevel to "minimal", so without translation EVERY agent turn
-// on those models pays a wasted first request + retry-with-low fallback in
-// embedded-agent-runner. Map "minimal" -> "low" upfront for modern models so the
-// first request is accepted. Older Codex models still accept "minimal"
-// directly. (#71946)
+// Modern Codex models reject the legacy CLI `minimal` default. Prefer
+// app-server metadata, then use the provider-owned fallback effort contract
+// for Pro models whose minimum supported effort is `medium`.
+// Other modern models translate `minimal` to `low`. (#71946)
 // Exported for unit-test coverage of the model-aware translation path.
 export function resolveReasoningEffort(
   thinkLevel: EmbeddedRunAttemptParams["thinkLevel"],
@@ -1846,6 +1921,15 @@ export function resolveReasoningEffort(
       resolveCodexSupportedReasoningEffort({
         requested: thinkLevel,
         supportedReasoningEfforts,
+      }) ?? null
+    );
+  }
+  const fallbackReasoningEfforts = resolveCodexFallbackReasoningEfforts(modelId);
+  if (fallbackReasoningEfforts) {
+    return (
+      resolveCodexSupportedReasoningEffort({
+        requested: thinkLevel,
+        supportedReasoningEfforts: fallbackReasoningEfforts,
       }) ?? null
     );
   }

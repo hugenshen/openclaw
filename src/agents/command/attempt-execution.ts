@@ -6,6 +6,7 @@ import {
   normalizeOptionalLowercaseString,
   type FastMode,
 } from "@openclaw/normalization-core/string-coerce";
+import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import { sanitizeForLog } from "../../../packages/terminal-core/src/ansi.js";
 import { ACP_TURN_TIMEOUT_DETAIL_CODE } from "../../acp/control-plane/manager.turn-timeout.js";
 import { formatAcpErrorChain } from "../../acp/runtime/errors.js";
@@ -29,11 +30,17 @@ import type { PluginMetadataSnapshot } from "../../plugins/plugin-metadata-snaps
 import { isSubagentSessionKey } from "../../routing/session-key.js";
 import { annotateInterSessionPromptText } from "../../sessions/input-provenance.js";
 import {
+  buildPersistedUserTurnMessage,
   preparePersistedUserTurnMessageForTranscriptWrite,
   type PersistedUserTurnMessage,
+  type UserTurnInput,
   type UserTurnTranscriptRecorder,
 } from "../../sessions/user-turn-transcript.js";
 import { buildWorkspaceSkillSnapshot } from "../../skills/loading/workspace.js";
+import {
+  getGeneratedMediaTaskIdsForSessionKey,
+  hasNewGeneratedMediaTaskForSessionKey,
+} from "../../tasks/task-status-access.js";
 import { resolveUserPath } from "../../utils.js";
 import { resolveMessageChannel } from "../../utils/message-channel.js";
 import { resolveAuthProfileOrder } from "../auth-profiles/order.js";
@@ -41,6 +48,8 @@ import { ensureAuthProfileStore } from "../auth-profiles/store.js";
 import { resolveBootstrapWarningSignaturesSeen } from "../bootstrap-budget.js";
 import { resolveCliBackendConfig } from "../cli-backends.js";
 import { runCliAgent } from "../cli-runner.js";
+import { hasClaudeLiveSessionForOwner } from "../cli-runner/claude-live-session.js";
+import { resolveCliRuntimeToolsAllow } from "../cli-runner/tool-policy.js";
 import { getCliSessionBinding } from "../cli-session.js";
 import { runEmbeddedAgent, type EmbeddedAgentRunResult } from "../embedded-agent.js";
 import { FailoverError } from "../failover-error.js";
@@ -308,11 +317,6 @@ async function persistTextTurnTranscript(
 ): Promise<PersistTextTurnTranscriptResult> {
   const promptText = params.transcriptBody ?? params.body;
   const replyText = params.finalText;
-  if (!promptText && !replyText) {
-    return { kind: "persisted", sessionEntry: params.sessionEntry };
-  }
-
-  const messages = [];
   const userMessage =
     params.userMessage ??
     (promptText
@@ -322,6 +326,11 @@ async function persistTextTurnTranscript(
           timestamp: Date.now(),
         } as PersistedUserTurnMessage)
       : undefined);
+  if (!userMessage && !replyText) {
+    return { kind: "persisted", sessionEntry: params.sessionEntry };
+  }
+
+  const messages = [];
   if (userMessage) {
     messages.push({
       message: userMessage,
@@ -405,6 +414,7 @@ function isClaudeCliProvider(provider: string): boolean {
 export async function persistAcpTurnTranscript(params: {
   body: string;
   transcriptBody?: string;
+  userInput?: UserTurnInput;
   finalText: string;
   sessionId: string;
   sessionKey: string;
@@ -418,6 +428,7 @@ export async function persistAcpTurnTranscript(params: {
 }): Promise<PersistTextTurnTranscriptResult> {
   return await persistTextTurnTranscript({
     ...params,
+    ...(params.userInput ? { userMessage: buildPersistedUserTurnMessage(params.userInput) } : {}),
     assistant: {
       api: "openai-responses",
       provider: "openclaw",
@@ -650,9 +661,22 @@ export function runAgentAttempt(params: {
           }
         : undefined;
     const resolveReusableCliSessionBinding = async () => {
+      const hasManagedClaudeLiveSession = Boolean(
+        isClaudeCliProvider(cliExecutionProvider) &&
+        cliSessionBinding?.sessionId &&
+        hasClaudeLiveSessionForOwner({
+          backendId: cliExecutionProvider,
+          agentAccountId: params.runContext.accountId,
+          agentId: params.sessionAgentId,
+          authProfileId: cliSessionBinding.authProfileId,
+          sessionId: params.sessionId,
+          sessionKey: params.sessionKey,
+        }),
+      );
       if (
         !isClaudeCliProvider(cliExecutionProvider) ||
         !cliSessionBinding?.sessionId ||
+        hasManagedClaudeLiveSession ||
         (await claudeCliSessionTranscriptHasContent({
           sessionId: cliSessionBinding.sessionId,
           workspaceDir: cliProcessCwd,
@@ -673,13 +697,19 @@ export function runAgentAttempt(params: {
           })) ?? params.sessionEntry;
       }
 
-      return undefined;
+      // The store is already cleared above, so no stale --resume can leak to a
+      // later turn. Still return the bound id as the reuse candidate: prepare
+      // re-detects the missing transcript, keeps useResume=false, and arms
+      // raw-transcript reseed from prior OpenClaw history. Returning undefined
+      // strips the candidate and starves reseed, losing warm-stdin continuity.
+      return cliSessionBinding;
     };
+    const mediaTaskIdsBefore = getGeneratedMediaTaskIdsForSessionKey(params.sessionKey);
     const runCliWithSession = (
       nextCliSessionId: string | undefined,
       activeCliSessionBinding = cliSessionBinding,
-    ) =>
-      runCliAgent({
+    ) => {
+      return runCliAgent({
         sessionId: params.sessionId,
         sessionKey: params.sessionKey,
         sessionEntry: params.sessionEntry,
@@ -702,7 +732,9 @@ export function runAgentAttempt(params: {
         extraSystemPrompt: params.opts.extraSystemPrompt,
         inputProvenance: params.opts.inputProvenance,
         sourceReplyDeliveryMode: params.opts.sourceReplyDeliveryMode,
-        requireExplicitMessageTarget: isSubagentSessionKey(params.sessionKey),
+        requireExplicitMessageTarget:
+          params.opts.requireExplicitMessageTarget ?? isSubagentSessionKey(params.sessionKey),
+        cliSessionBindingFacts: params.opts.cliSessionBindingFacts,
         cliSessionId: nextCliSessionId,
         cliSessionBinding:
           nextCliSessionId === activeCliSessionBinding?.sessionId
@@ -730,7 +762,10 @@ export function runAgentAttempt(params: {
         agentAccountId: params.runContext.accountId,
         senderId: params.runContext.senderId,
         senderIsOwner: params.opts.senderIsOwner,
-        toolsAllow: params.opts.toolsAllow,
+        toolsAllow: resolveCliRuntimeToolsAllow(
+          params.opts.toolsAllow,
+          params.opts.toolsAllowIsDefault,
+        ),
         cleanupBundleMcpOnRunEnd: params.opts.cleanupBundleMcpOnRunEnd,
         cleanupCliLiveSessionOnRunEnd: params.opts.cleanupCliLiveSessionOnRunEnd,
         oneShotCliRun: params.opts.oneShotCliRun,
@@ -739,7 +774,10 @@ export function runAgentAttempt(params: {
         ...(mutableCliSessionStore
           ? {
               onBeforeFreshCliSessionRetry: async (retry) => {
-                if (retry.sessionId !== activeCliSessionBinding?.sessionId) {
+                if (
+                  hasNewGeneratedMediaTaskForSessionKey(params.sessionKey, mediaTaskIdsBefore) ||
+                  retry.sessionId !== activeCliSessionBinding?.sessionId
+                ) {
                   return false;
                 }
 
@@ -757,6 +795,7 @@ export function runAgentAttempt(params: {
             }
           : {}),
       });
+    };
     return resolveReusableCliSessionBinding().then(async (activeCliSessionBinding) => {
       try {
         return await runCliWithSession(activeCliSessionBinding?.sessionId, activeCliSessionBinding);
@@ -764,6 +803,7 @@ export function runAgentAttempt(params: {
         if (
           isClaudeCliProvider(cliExecutionProvider) &&
           shouldClearReusedCliSessionAfterError(err) &&
+          !hasNewGeneratedMediaTaskForSessionKey(params.sessionKey, mediaTaskIdsBefore) &&
           activeCliSessionBinding?.sessionId &&
           mutableCliSessionStore
         ) {
@@ -1158,7 +1198,7 @@ function resolvePresentProxyEnvKeys(env: NodeJS.ProcessEnv = process.env): strin
 }
 
 function sanitizeAcpDiagnosticText(value: string): string {
-  return redactSensitiveText(value).replace(/\s+/g, " ").trim().slice(0, 240);
+  return truncateUtf16Safe(redactSensitiveText(value).replace(/\s+/g, " ").trim(), 240);
 }
 
 function acpRuntimeEventDiagnostics(event: AcpRuntimeEvent): Record<string, unknown> {

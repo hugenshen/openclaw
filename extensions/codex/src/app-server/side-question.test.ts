@@ -332,16 +332,6 @@ function nativeCommandItem(
   };
 }
 
-function turnCompletedWithNestedThread(
-  threadId: string,
-  turnId: string,
-  text: string,
-): CodexServerNotification {
-  const notification = turnCompleted(threadId, turnId, text);
-  const turn = (notification.params as JsonObject).turn;
-  return { method: notification.method, params: { threadId: "parent-thread", turn } };
-}
-
 function sideParams(overrides: Partial<Parameters<typeof runCodexAppServerSideQuestion>[0]> = {}) {
   return {
     cfg: {} as never,
@@ -928,33 +918,6 @@ describe("runCodexAppServerSideQuestion", () => {
     });
     expect(toolExecuteMock).not.toHaveBeenCalled();
     expect(resolveCodexProviderWebSearchSupportForClientMock).not.toHaveBeenCalled();
-  });
-
-  it("returns side-thread completions scoped by nested turn thread id", async () => {
-    const client = createFakeClient();
-    client.request.mockImplementation(async (method: string) => {
-      if (method === "thread/fork") {
-        return threadResult("side-thread");
-      }
-      if (method === "thread/inject_items") {
-        return {};
-      }
-      if (method === "turn/start") {
-        queueMicrotask(() =>
-          client.emit(turnCompletedWithNestedThread("side-thread", "turn-1", "Nested answer.")),
-        );
-        return turnStartResult("turn-1");
-      }
-      if (method === "thread/unsubscribe" || method === "turn/interrupt") {
-        return {};
-      }
-      throw new Error(`unexpected request: ${method}`);
-    });
-    getSharedCodexAppServerClientMock.mockResolvedValue(client);
-
-    const result = await runCodexAppServerSideQuestion(sideParams());
-
-    expect(result).toEqual({ text: "Nested answer." });
   });
 
   it("rejects /btw before forking when the current OpenClaw session is sandboxed", async () => {
@@ -1904,6 +1867,62 @@ describe("runCodexAppServerSideQuestion", () => {
     expect(toolResponse).toEqual({
       success: true,
       contentItems: [{ type: "inputText", text: "tool output" }],
+    });
+  });
+
+  it("omits computer control from side threads without a compaction owner", async () => {
+    const client = createFakeClient();
+    const computerExecute = vi.fn();
+    let toolResponse: unknown;
+    createOpenClawCodingToolsMock.mockReturnValue([
+      {
+        name: "computer",
+        description: "Control a desktop",
+        parameters: { type: "object", properties: {} },
+        execute: computerExecute,
+      },
+    ]);
+    client.request.mockImplementation(async (method: string) => {
+      if (method === "thread/fork") {
+        return threadResult("side-thread");
+      }
+      if (method === "thread/inject_items") {
+        return {};
+      }
+      if (method === "turn/start") {
+        setTimeout(() => {
+          void (async () => {
+            toolResponse = await client.handleRequest({
+              id: 43,
+              method: "item/tool/call",
+              params: {
+                threadId: "side-thread",
+                turnId: "turn-1",
+                callId: "computer-1",
+                tool: "computer",
+                arguments: { action: "screenshot" },
+              },
+            });
+            client.emit(agentDelta("side-thread", "turn-1", "Side answer."));
+            client.emit(turnCompleted("side-thread", "turn-1", "Side answer."));
+          })();
+        }, 0);
+        return turnStartResult("turn-1");
+      }
+      if (method === "thread/unsubscribe" || method === "turn/interrupt") {
+        return {};
+      }
+      throw new Error(`unexpected request: ${method}`);
+    });
+    getSharedCodexAppServerClientMock.mockResolvedValue(client);
+
+    await expect(runCodexAppServerSideQuestion(sideParams())).resolves.toEqual({
+      text: "Side answer.",
+    });
+    expect(computerExecute).not.toHaveBeenCalled();
+    expect(toolResponse).toEqual({
+      success: false,
+      contentItems: [{ type: "inputText", text: "Unknown OpenClaw tool: computer" }],
     });
   });
 

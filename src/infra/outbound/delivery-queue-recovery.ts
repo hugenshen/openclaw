@@ -14,10 +14,12 @@ import {
   computeBackoffMs,
   createRecoveryReplayPacer,
   getErrnoCode,
+  isPreConnectNetworkError,
   releaseRecoveryEntry as releaseSharedRecoveryEntry,
 } from "../delivery-recovery.shared.js";
 import { formatErrorMessage } from "../errors.js";
 import { resolveOutboundChannelMessageAdapter } from "./channel-resolution.js";
+import { resolveDeferredDeliveryAdmission } from "./deferred-delivery-admission.js";
 import {
   isOutboundDeliveryError,
   type OutboundDeliveryResult,
@@ -31,6 +33,8 @@ import {
   ackDelivery,
   failDelivery,
   failDeliveryAfterPlatformSend,
+  failDeliveryBeforePlatformSend,
+  failPendingDelivery,
   loadPendingDelivery,
   loadPendingDeliveries,
   markDeliveryPlatformOutcomeUnknown,
@@ -55,6 +59,7 @@ export type DeliverFn = (
       deliveryQueueId?: string;
       deliveryQueueStateDir?: string;
       skipQueue?: boolean;
+      deferredDeliveryAdmissionPassed?: true;
       deferCommitHooks?: boolean;
       onPayloadDeliveryOutcome?: (outcome: OutboundPayloadDeliveryOutcome) => void;
       onDeliveryResult?: (result: OutboundDeliveryResult) => Promise<void> | void;
@@ -159,8 +164,47 @@ function buildRecoveryDeliverParams(entry: QueuedDelivery, cfg: OpenClawConfig, 
     deliveryQueueId: entry.id,
     deliveryQueueStateDir: stateDir,
     skipQueue: true, // Prevent re-enqueueing during recovery.
+    deferredDeliveryAdmissionPassed: true,
     deferCommitHooks: true,
   } satisfies Parameters<DeliverFn>[0];
+}
+
+async function applyRecoveryDeliveryAdmission(params: {
+  entry: QueuedDelivery;
+  cfg: OpenClawConfig;
+  log: RecoveryLogger;
+  stateDir?: string;
+  logLabel: string;
+}): Promise<"allowed" | "failed" | "not_pending"> {
+  const admission = resolveDeferredDeliveryAdmission({
+    cfg: params.cfg,
+    channel: params.entry.channel,
+    to: params.entry.to,
+    accountId: params.entry.accountId,
+    phase: "recovery",
+  });
+  if (admission.status === "allowed") {
+    return "allowed";
+  }
+  const result = await failPendingDelivery(
+    {
+      id: params.entry.id,
+      expectedStatus: "pending",
+      lastError: admission.reason,
+      entry: params.entry,
+    },
+    params.stateDir,
+  );
+  if (result.status === "failed") {
+    params.log.warn(
+      `${params.logLabel}: entry ${params.entry.id} permanently rejected before recovery: ${admission.reason}`,
+    );
+    return "failed";
+  }
+  params.log.info(
+    `${params.logLabel}: entry ${params.entry.id} changed status before admission failure was persisted`,
+  );
+  return "not_pending";
 }
 
 async function reconcileUnknownQueuedDelivery(opts: {
@@ -506,11 +550,12 @@ async function drainQueuedEntry(opts: {
     if (results.length > 0) {
       deliveredResults = [...results];
     }
-    const failedOutcome = payloadOutcomes.find((outcome) => outcome.status === "failed");
+    const failedOutcomes = payloadOutcomes.filter((outcome) => outcome.status === "failed");
+    const failedOutcome = failedOutcomes[0];
     if (failedOutcome) {
       const errMsg = formatErrorMessage(failedOutcome.error);
       opts.onFailed?.(entry, errMsg);
-      if (results.length > 0 || failedOutcome.sentBeforeError) {
+      if (results.length > 0 || failedOutcomes.some((outcome) => outcome.sentBeforeError)) {
         postSendState ??= await persistRecoveredPostSendState({
           entry,
           log: opts.log,
@@ -523,7 +568,12 @@ async function drainQueuedEntry(opts: {
           await runCommitHooksAfterAck();
         }
       } else {
-        await failDelivery(entry.id, errMsg, opts.stateDir);
+        const recordFailure = failedOutcomes.every((outcome) =>
+          isPreConnectNetworkError(outcome.error),
+        )
+          ? failDeliveryBeforePlatformSend
+          : failDelivery;
+        await recordFailure(entry.id, errMsg, opts.stateDir);
       }
       return "failed";
     }
@@ -601,7 +651,10 @@ async function drainQueuedEntry(opts: {
       }
     } else {
       try {
-        await failDelivery(entry.id, errMsg, opts.stateDir);
+        const recordFailure = isPreConnectNetworkError(err)
+          ? failDeliveryBeforePlatformSend
+          : failDelivery;
+        await recordFailure(entry.id, errMsg, opts.stateDir);
         return "failed";
       } catch (failErr) {
         if (getErrnoCode(failErr) === "ENOENT") {
@@ -653,6 +706,17 @@ export async function drainPendingDeliveries(opts: {
         const currentEntry = await loadPendingDelivery(entry.id, opts.stateDir);
         if (!currentEntry) {
           opts.log.info(`${opts.logLabel}: entry ${entry.id} already gone, skipping`);
+          continue;
+        }
+
+        const admission = await applyRecoveryDeliveryAdmission({
+          entry: currentEntry,
+          cfg: opts.cfg,
+          log: opts.log,
+          stateDir: opts.stateDir,
+          logLabel: opts.logLabel,
+        });
+        if (admission !== "allowed") {
           continue;
         }
 
@@ -761,6 +825,20 @@ export async function recoverPendingDeliveries(opts: {
       const currentEntry = await loadPendingDelivery(entry.id, opts.stateDir);
       if (!currentEntry) {
         opts.log.info(`Recovery skipped for delivery ${entry.id}: already gone`);
+        continue;
+      }
+
+      const admission = await applyRecoveryDeliveryAdmission({
+        entry: currentEntry,
+        cfg: opts.cfg,
+        log: opts.log,
+        stateDir: opts.stateDir,
+        logLabel: "Recovery",
+      });
+      if (admission !== "allowed") {
+        if (admission === "failed") {
+          summary.failed += 1;
+        }
         continue;
       }
 

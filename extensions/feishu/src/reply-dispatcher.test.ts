@@ -3,6 +3,7 @@ import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 type StreamingSessionStub = {
   active: boolean;
+  credentials: unknown;
   start: ReturnType<typeof vi.fn>;
   update: ReturnType<typeof vi.fn>;
   close: ReturnType<typeof vi.fn>;
@@ -92,7 +93,8 @@ vi.mock("./streaming-card.js", () => {
       });
       isActive = vi.fn(() => this.active);
 
-      constructor() {
+      constructor(_client: unknown, credentials: unknown) {
+        this.credentials = credentials;
         streamingInstances.push(this);
       }
     },
@@ -148,6 +150,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
       config: {
         renderMode: "auto",
         streaming: true,
+        httpTimeoutMs: 45_000,
       },
     });
 
@@ -462,6 +465,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
     await options.onIdle?.();
 
     expect(streamingInstances).toHaveLength(1);
+    expect(streamingInstances[0].credentials).toMatchObject({ httpTimeoutMs: 45_000 });
     expect(streamingInstances[0].close).toHaveBeenCalledWith("plain text", {
       note: "Agent: agent",
     });

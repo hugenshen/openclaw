@@ -320,7 +320,7 @@ describe("FeishuStreamingSession", () => {
     );
   });
 
-  it("aborts a stalled Feishu tenant-token request after 30 seconds", async () => {
+  it("aborts a stalled Feishu tenant-token request after the configured timeout", async () => {
     vi.useFakeTimers();
     let authRequestReceived = false;
     const deps: StreamingFetchDeps = {
@@ -360,6 +360,7 @@ describe("FeishuStreamingSession", () => {
       {
         appId: "app_stalled_token",
         appSecret: "secret",
+        httpTimeoutMs: 25,
       },
       undefined,
       deps,
@@ -373,11 +374,11 @@ describe("FeishuStreamingSession", () => {
         return true;
       },
     );
-    await vi.advanceTimersByTimeAsync(30_001);
+    await vi.advanceTimersByTimeAsync(26);
     await result;
     expect(authRequestReceived).toBe(true);
     console.log(
-      "[feishu streaming-card stall proof] stalled tenant-token fetch aborted after 30000ms",
+      "[feishu streaming-card stall proof] stalled tenant-token fetch honored configured timeout",
     );
   });
 

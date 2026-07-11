@@ -312,39 +312,14 @@ describe("worker tunnel manager", () => {
 });
 
 describe("createWorkerSshRunner diagnostic tails", () => {
-  it.skipIf(process.platform === "win32")(
-    "keeps SSH tunnel failure stderr on a valid UTF-16 boundary",
-    async () => {
-      // STDERR_LIMIT is 4096. Payload length 4098 so raw `.slice(-4096)` starts on the
-      // low surrogate of 😀 (indexes: 0='a', 1=high, 2=low, 3..=b).
-      const retained = "b".repeat(4095);
-      const payload = `a😀${retained}`;
-      const runner = createWorkerSshRunner();
-      const child = runner.start(
-        [
-          process.execPath,
-          "-e",
-          `process.stderr.write(${JSON.stringify(payload)}); process.exit(1);`,
-        ],
-        { timeoutMs: 10_000, baseEnv: process.env },
-      );
+  it("keeps SSH tunnel failure stderr on a valid UTF-16 boundary", async () => {
+    const retained = "b".repeat(4095);
+    const child = createWorkerSshRunner().start(
+      [process.execPath, "-e", `process.stderr.write(${JSON.stringify(`a😀${retained}`)})`],
+      { timeoutMs: 10_000, baseEnv: process.env },
+    );
 
-      let message: string | undefined;
-      try {
-        await child.ready;
-      } catch (error) {
-        message = error instanceof Error ? error.message : String(error);
-      }
-      await child.exited;
-
-      expect(message).toBeDefined();
-      expect(message).toContain("Worker SSH tunnel failed:");
-      expect(message).toContain(retained);
-      expect(message).not.toContain("😀");
-      expect(message).not.toContain("\uFFFD");
-      const detail = message!.slice("Worker SSH tunnel failed: ".length);
-      expect(detail.charCodeAt(0)).toBe("b".charCodeAt(0));
-      expect(detail.charCodeAt(0)).toBeLessThan(0xd800);
-    },
-  );
+    await expect(child.ready).rejects.toThrow(`Worker SSH tunnel failed: ${retained}`);
+    await child.exited;
+  });
 });

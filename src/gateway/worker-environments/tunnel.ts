@@ -37,15 +37,10 @@ const WORKSPACE_TIMEOUT_MS = 10 * 60_000;
 const STOP_GRACE_MS = 1_500;
 const STDERR_LIMIT = 4_096;
 
-// Remote SSH stderr/stdout can include emoji paths or locale text. Raw `.slice(-N)`
-// can start on a low surrogate; keep the rolling diagnostic tail UTF-16 safe so
-// processError() does not embed a lone surrogate in the operator-facing Error.
+// Preserve the newest diagnostics without leaving a lone surrogate at the tail boundary.
 function appendBoundedDiagnosticTail(current: string, chunk: string): string {
   const next = `${current}${chunk}`;
-  if (next.length <= STDERR_LIMIT) {
-    return next;
-  }
-  return sliceUtf16Safe(next, Math.max(0, next.length - STDERR_LIMIT));
+  return next.length > STDERR_LIMIT ? sliceUtf16Safe(next, -STDERR_LIMIT) : next;
 }
 const DEFAULT_STABLE_CONNECTION_MS = 30_000;
 const DEFAULT_BACKOFF: BackoffPolicy = {

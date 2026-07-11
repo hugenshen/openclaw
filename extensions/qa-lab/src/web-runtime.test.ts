@@ -233,6 +233,21 @@ describe("qa web runtime", () => {
     await closeQaWebSessions();
   });
 
+  it("does not split a surrogate pair when truncating snapshot text at maxChars", async () => {
+    // 🤖 is U+1F916 — two UTF-16 code units. maxChars=4 lands inside the pair.
+    // raw .slice(0, 4) keeps "abc" + U+D83E (lone high surrogate);
+    // truncateUtf16Safe backs off to the safe boundary.
+    bodyLocator.textContent.mockResolvedValueOnce("abc🤖end");
+    const opened = await qaWebOpenPage({ url: "http://127.0.0.1:3000/chat" });
+    const snapshot = await qaWebSnapshot({ pageId: opened.pageId, maxChars: 4 });
+    await closeQaWebSessions();
+
+    const hasUnpairedSurrogate =
+      /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(snapshot.text);
+    expect(hasUnpairedSurrogate).toBe(false);
+    expect(snapshot.text.length).toBeLessThanOrEqual(4);
+  });
+
   it("caps oversized web runtime timeouts", async () => {
     const timeoutSpy = vi.spyOn(globalThis, "setTimeout");
     const clearTimeoutSpy = vi.spyOn(globalThis, "clearTimeout");

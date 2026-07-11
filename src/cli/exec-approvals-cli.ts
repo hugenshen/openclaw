@@ -12,6 +12,7 @@ import { readBestEffortConfig, type OpenClawConfig } from "../config/config.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import {
   collectExecPolicyScopeSnapshots,
+  SESSION_EXEC_OVERRIDES_NOTE,
   type ExecPolicyScopeSnapshot,
 } from "../infra/exec-approvals-effective.js";
 import {
@@ -29,9 +30,6 @@ import { callGatewayFromCli } from "./gateway-rpc.js";
 import { nodesCallOpts, resolveNodeId } from "./nodes-cli/rpc.js";
 import type { NodesRpcOpts } from "./nodes-cli/types.js";
 import { applyParentDefaultHelpAction } from "./program/parent-default-help.js";
-
-const SESSION_EXEC_OVERRIDES_NOTE =
-  "Per-session /exec overrides are not included; send /exec in the target chat or cron session to inspect them.";
 
 type FileExecApprovalsSnapshot = {
   path: string;

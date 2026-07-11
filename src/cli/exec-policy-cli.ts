@@ -9,6 +9,7 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { sanitizeExecApprovalDisplayText } from "../infra/exec-approval-command-display.js";
 import {
   collectExecPolicyScopeSnapshots,
+  SESSION_EXEC_OVERRIDES_NOTE,
   type ExecPolicyScopeSnapshot,
 } from "../infra/exec-approvals-effective.js";
 import {
@@ -70,9 +71,6 @@ type ExecPolicyShowPayload = {
 
 type ExecPolicyShowSecurity = ExecSecurity | "unknown";
 type ExecPolicyShowAsk = ExecAsk | "unknown";
-
-const SESSION_EXEC_OVERRIDES_NOTE =
-  "Per-session /exec overrides are not included; send /exec in the target chat or cron session to inspect them.";
 
 type ExecPolicyShowScope = Omit<
   ExecPolicyScopeSnapshot,

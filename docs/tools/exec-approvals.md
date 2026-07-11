@@ -58,7 +58,7 @@ Exec approvals are enforced locally on the execution host:
 | `openclaw exec-policy set` / `preset`                            | Synchronize the local requested policy with the local host approvals file in one step. |
 
 <Note>
-Per-session `/exec` overrides are not included. Send `/exec` in the target chat or cron session to inspect them.
+Per-session `/exec` overrides are not included. Run `/exec` in the relevant session to inspect its current defaults. See [session overrides](/tools/exec#session-overrides-exec).
 </Note>
 
 Full CLI reference (flags, JSON output, allowlist add/remove): [Approvals CLI](/cli/approvals).

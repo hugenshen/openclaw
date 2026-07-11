@@ -3,6 +3,7 @@ import { Command } from "commander";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { stripAnsi } from "../../packages/terminal-core/src/ansi.js";
 import type { OpenClawConfig } from "../config/config.js";
+import { SESSION_EXEC_OVERRIDES_NOTE } from "../infra/exec-approvals-effective.js";
 import type { ExecApprovalsFile, ExecApprovalsSnapshot } from "../infra/exec-approvals.js";
 import { registerExecPolicyCli } from "./exec-policy-cli.js";
 

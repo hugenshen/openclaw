@@ -6,10 +6,9 @@ import { Command } from "commander";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import * as execApprovals from "../infra/exec-approvals.js";
+import { SESSION_EXEC_OVERRIDES_NOTE } from "../infra/exec-approvals-effective.js";
 import type { ExecApprovalsFile } from "../infra/exec-approvals.js";
 import { registerExecApprovalsCli, testing } from "./exec-approvals-cli.js";
-
-const SESSION_EXEC_OVERRIDES_NOTE = "Per-session /exec overrides are not included";
 
 describe("exec approvals CLI error formatting", () => {
   it("keeps the bounded first line UTF-16 well-formed", () => {
@@ -240,20 +239,37 @@ describe("exec approvals CLI", () => {
 
     expect(callGatewayFromCli).not.toHaveBeenCalled();
     expect(readBestEffortConfig).toHaveBeenCalledTimes(1);
+    expect(
+      defaultRuntime.log.mock.calls.filter(([line]) =>
+        String(line ?? "").includes(SESSION_EXEC_OVERRIDES_NOTE),
+      ),
+    ).toHaveLength(1);
     expect(runtimeErrors).toHaveLength(0);
     callGatewayFromCli.mockClear();
+    defaultRuntime.log.mockClear();
 
     await runApprovalsCommand(["approvals", "get", "--gateway"]);
 
     expectGatewayCall(0, "exec.approvals.get", {});
     expectGatewayCall(1, "config.get", {});
+    expect(
+      defaultRuntime.log.mock.calls.filter(([line]) =>
+        String(line ?? "").includes(SESSION_EXEC_OVERRIDES_NOTE),
+      ),
+    ).toHaveLength(1);
     expect(runtimeErrors).toHaveLength(0);
     callGatewayFromCli.mockClear();
+    defaultRuntime.log.mockClear();
 
     await runApprovalsCommand(["approvals", "get", "--node", "macbook"]);
 
     expectGatewayCall(0, "exec.approvals.node.get", { nodeId: "node-1" });
     expectGatewayCall(1, "config.get", {});
+    expect(
+      defaultRuntime.log.mock.calls.some(([line]) =>
+        String(line ?? "").includes(SESSION_EXEC_OVERRIDES_NOTE),
+      ),
+    ).toBe(false);
     expect(runtimeErrors).toHaveLength(0);
   });
 
@@ -714,24 +730,6 @@ describe("exec approvals CLI", () => {
       scopes: [],
     });
     expect(runtimeErrors).toHaveLength(0);
-  });
-
-  it("renders the session override caveat in text output", async () => {
-    readBestEffortConfig.mockResolvedValue({
-      tools: {
-        exec: {
-          security: "full",
-          ask: "off",
-        },
-      },
-    });
-
-    await runApprovalsCommand(["approvals", "get"]);
-
-    const output = defaultRuntime.log.mock.calls.map((call) => String(call[0] ?? "")).join("\n");
-    expect(output).toContain("Effective Policy");
-    expect(output).toContain("Precedence:");
-    expect(output).toContain(SESSION_EXEC_OVERRIDES_NOTE);
   });
 
   it("reports agent scopes with inherited global requested policy", async () => {

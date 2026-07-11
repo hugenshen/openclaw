@@ -31,10 +31,6 @@ Then verify the effective policy:
 openclaw exec-policy show
 ```
 
-<Note>
-Per-session `/exec` overrides are not included. Send `/exec` in the target chat or cron session to inspect them.
-</Note>
-
 ## OpenClaw host exec modes
 
 `tools.exec.mode` is the normalized policy surface for host `exec`. Each mode resolves to an underlying `security` (allowlist strictness) and `ask` (prompt-on-miss) pair:

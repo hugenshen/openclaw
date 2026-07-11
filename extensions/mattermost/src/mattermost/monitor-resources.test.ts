@@ -123,43 +123,43 @@ describe("mattermost monitor resources", () => {
         resolve();
       });
     });
-    const address = server.address();
-    if (!address || typeof address === "string") {
-      throw new Error("expected loopback TCP address");
-    }
-    const fileId = "file-stall";
-    const headerTimeoutMs = 250;
-    const saveRemoteMediaWithHeaderTimeout: typeof saveRemoteMedia = (params) =>
-      saveRemoteMedia({
-        ...params,
-        responseHeaderTimeoutMs: headerTimeoutMs,
-        readIdleTimeoutMs: MATTERMOST_MEDIA_READ_IDLE_TIMEOUT_MS,
-        ssrfPolicy: { ...params.ssrfPolicy, dangerouslyAllowPrivateNetwork: true },
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("expected loopback TCP address");
+      }
+      const fileId = "file-stall";
+      const headerTimeoutMs = 250;
+      const saveRemoteMediaWithHeaderTimeout: typeof saveRemoteMedia = (params) =>
+        saveRemoteMedia({
+          ...params,
+          responseHeaderTimeoutMs: headerTimeoutMs,
+          readIdleTimeoutMs: MATTERMOST_MEDIA_READ_IDLE_TIMEOUT_MS,
+          ssrfPolicy: { ...params.ssrfPolicy, dangerouslyAllowPrivateNetwork: true },
+        });
+
+      const resources = createMattermostMonitorResources({
+        accountId: "default",
+        callbackUrl: "https://openclaw.test/callback",
+        client: {
+          apiBaseUrl: `http://127.0.0.1:${address.port}/api/v4`,
+          baseUrl: `http://127.0.0.1:${address.port}`,
+          token: "bot-token",
+        } as never,
+        logger: {},
+        mediaMaxBytes: 1024,
+        saveRemoteMedia: saveRemoteMediaWithHeaderTimeout,
+        mediaKindFromMime: () => "image",
       });
 
-    const resources = createMattermostMonitorResources({
-      accountId: "default",
-      callbackUrl: "https://openclaw.test/callback",
-      client: {
-        apiBaseUrl: `http://127.0.0.1:${address.port}/api/v4`,
-        baseUrl: `http://127.0.0.1:${address.port}`,
-        token: "bot-token",
-      } as never,
-      logger: {},
-      mediaMaxBytes: 1024,
-      saveRemoteMedia: saveRemoteMediaWithHeaderTimeout,
-      mediaKindFromMime: () => "image",
-    });
-
-    const started = Date.now();
-    await expect(resources.resolveMattermostMedia([fileId])).resolves.toEqual([]);
-    const elapsedMs = Date.now() - started;
-    expect(elapsedMs).toBeGreaterThanOrEqual(headerTimeoutMs - 50);
-    expect(elapsedMs).toBeLessThan(headerTimeoutMs + 2_000);
-
-    await new Promise<void>((resolve) => {
-      server.close(() => resolve());
-    });
+      const started = Date.now();
+      await expect(resources.resolveMattermostMedia([fileId])).resolves.toEqual([]);
+      const elapsedMs = Date.now() - started;
+      expect(elapsedMs).toBeGreaterThanOrEqual(headerTimeoutMs - 50);
+      expect(elapsedMs).toBeLessThan(headerTimeoutMs + 2_000);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 
   it("caches channel and user lookups and falls back to empty picker props", async () => {

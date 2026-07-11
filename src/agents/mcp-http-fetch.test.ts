@@ -272,4 +272,49 @@ describe("MCP HTTP fetch helpers", () => {
     expect(response.body).toBeNull();
     expect(text).not.toHaveBeenCalled();
   });
+
+  it("aborts hung OAuth requests when requestTimeoutMs is configured", async () => {
+    vi.useFakeTimers();
+    try {
+      testGlobal[TEST_UNDICI_RUNTIME_DEPS_KEY] = {
+        Agent: TestAgent,
+        EnvHttpProxyAgent: TestEnvHttpProxyAgent,
+        ProxyAgent: TestProxyAgent,
+        fetch: async (_url: string | URL | Request, init?: unknown) =>
+          await new Promise<Response>((_resolve, reject) => {
+            const signal =
+              typeof init === "object" && init !== null && "signal" in init
+                ? (init as { signal?: AbortSignal }).signal
+                : undefined;
+            if (!signal) {
+              reject(new Error("expected signal"));
+              return;
+            }
+            const rejectForAbort = () => {
+              reject(
+                signal.reason instanceof Error
+                  ? signal.reason
+                  : new Error("MCP OAuth request aborted"),
+              );
+            };
+            if (signal.aborted) {
+              rejectForAbort();
+              return;
+            }
+            signal.addEventListener("abort", rejectForAbort, { once: true });
+          }),
+      };
+      const fetch = buildMcpHttpFetch({
+        resourceUrl: "https://mcp.example.com/mcp",
+        requestTimeoutMs: 25,
+      });
+
+      const pending = fetch("https://mcp.example.com/token", { method: "POST" });
+      const expectation = expect(pending).rejects.toMatchObject({ name: "TimeoutError" });
+      await vi.advanceTimersByTimeAsync(30);
+      await expectation;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

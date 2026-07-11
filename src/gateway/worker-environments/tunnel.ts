@@ -36,12 +36,6 @@ const REMOTE_SETUP_TIMEOUT_MS = 20_000;
 const WORKSPACE_TIMEOUT_MS = 10 * 60_000;
 const STOP_GRACE_MS = 1_500;
 const STDERR_LIMIT = 4_096;
-
-// Preserve the newest diagnostics without leaving a lone surrogate at the tail boundary.
-function appendBoundedDiagnosticTail(current: string, chunk: string): string {
-  const next = `${current}${chunk}`;
-  return next.length > STDERR_LIMIT ? sliceUtf16Safe(next, -STDERR_LIMIT) : next;
-}
 const DEFAULT_STABLE_CONNECTION_MS = 30_000;
 const DEFAULT_BACKOFF: BackoffPolicy = {
   initialMs: 250,
@@ -169,7 +163,7 @@ export function createWorkerSshRunner(): WorkerSshRunner {
         if (readySettled) {
           return;
         }
-        stdout = appendBoundedDiagnosticTail(stdout, chunk);
+        stdout = sliceUtf16Safe(`${stdout}${chunk}`, -STDERR_LIMIT);
         if (stdout.split(/\r?\n/u).includes(READY_MARKER)) {
           readySettled = true;
           resolveReady();
@@ -178,7 +172,7 @@ export function createWorkerSshRunner(): WorkerSshRunner {
       child.stderr.setEncoding("utf8");
       child.stderr.on("error", () => {});
       child.stderr.on("data", (chunk: string) => {
-        stderr = appendBoundedDiagnosticTail(stderr, chunk);
+        stderr = sliceUtf16Safe(`${stderr}${chunk}`, -STDERR_LIMIT);
       });
       child.once("error", settleReadyError);
       child.once("close", (code, signal) => {

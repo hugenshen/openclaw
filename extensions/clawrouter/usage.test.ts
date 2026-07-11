@@ -1,9 +1,34 @@
 import { createServer, type Server } from "node:http";
-import type { AddressInfo } from "node:net";
-import { afterEach, describe, expect, it, vi, type MockedFunction } from "vitest";
+import { connect, type AddressInfo } from "node:net";
+import type { Duplex } from "node:stream";
+import { afterEach, beforeEach, describe, expect, it, vi, type MockedFunction } from "vitest";
 import { fetchClawRouterUsage, type ClawRouterUsageFetchGuard } from "./usage.js";
 
 const runningServers: Server[] = [];
+const runningSockets = new Set<Duplex>();
+const PROXY_ENV_KEYS = [
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+  "NO_PROXY",
+  "http_proxy",
+  "https_proxy",
+  "no_proxy",
+] as const;
+const savedProxyEnv = new Map<string, string | undefined>();
+
+function trackSocket(socket: Duplex): void {
+  runningSockets.add(socket);
+  socket.once("close", () => runningSockets.delete(socket));
+}
+
+async function listenOnLoopback(server: Server): Promise<number> {
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => resolve());
+  });
+  runningServers.push(server);
+  return (server.address() as AddressInfo).port;
+}
 
 async function startUsageServer(
   handler: (
@@ -16,19 +41,53 @@ async function startUsageServer(
     requests.push(`${req.method ?? "GET"} ${req.url ?? "/"}`);
     handler(req, res);
   });
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => resolve());
-  });
-  runningServers.push(server);
-  const address = server.address() as AddressInfo;
+  const port = await listenOnLoopback(server);
   return {
-    baseUrl: `http://127.0.0.1:${address.port}`,
+    baseUrl: `http://127.0.0.1:${port}`,
     requests,
   };
 }
 
+async function startConnectProxy(): Promise<{ proxyUrl: string; connects: string[] }> {
+  const connects: string[] = [];
+  const server = createServer();
+  server.on("connect", (req, clientSocket, head) => {
+    const target = req.url;
+    if (!target) {
+      clientSocket.destroy();
+      return;
+    }
+    connects.push(target);
+    trackSocket(clientSocket);
+    const targetUrl = new URL(`http://${target}`);
+    const targetSocket = connect(Number(targetUrl.port), targetUrl.hostname, () => {
+      clientSocket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+      if (head.length > 0) {
+        targetSocket.write(head);
+      }
+      clientSocket.pipe(targetSocket);
+      targetSocket.pipe(clientSocket);
+    });
+    trackSocket(targetSocket);
+    targetSocket.on("error", () => clientSocket.destroy());
+    clientSocket.on("error", () => targetSocket.destroy());
+  });
+  const port = await listenOnLoopback(server);
+  return { proxyUrl: `http://127.0.0.1:${port}`, connects };
+}
+
+beforeEach(() => {
+  for (const key of PROXY_ENV_KEYS) {
+    savedProxyEnv.set(key, process.env[key]);
+    delete process.env[key];
+  }
+});
+
 afterEach(async () => {
+  for (const socket of runningSockets) {
+    socket.destroy();
+  }
+  runningSockets.clear();
   await Promise.all(
     runningServers.splice(0).map(
       (server) =>
@@ -37,6 +96,15 @@ afterEach(async () => {
         }),
     ),
   );
+  for (const key of PROXY_ENV_KEYS) {
+    const value = savedProxyEnv.get(key);
+    if (value === undefined) {
+      delete process.env[key];
+    } else {
+      process.env[key] = value;
+    }
+  }
+  savedProxyEnv.clear();
 });
 
 function mockFetchGuard(response: Response): MockedFunction<ClawRouterUsageFetchGuard> {
@@ -109,6 +177,7 @@ describe("ClawRouter usage", () => {
           },
         }),
         auditContext: "clawrouter.usage",
+        mode: "trusted_env_proxy",
       }),
     );
     expect(fetchGuard.mock.calls[0]?.[0]).not.toHaveProperty("fetchImpl");
@@ -185,11 +254,36 @@ describe("ClawRouter usage", () => {
     expect(requests).toEqual(["GET /v1/usage"]);
   });
 
-  it("blocks private-network redirects on the production transport path", async () => {
+  it("preserves provider usage routing through the env proxy", async () => {
+    const { baseUrl } = await startUsageServer((_req, res) => {
+      res.writeHead(200, { "content-type": "application/json", connection: "close" });
+      res.end(
+        JSON.stringify({
+          budget: { configured: false, ledger: "unmetered" },
+          usage: { summary: { requestCount: 2, totalTokens: 8, actualCostMicros: 0 } },
+        }),
+      );
+    });
+    const { proxyUrl, connects } = await startConnectProxy();
+    process.env.HTTP_PROXY = proxyUrl;
+
+    const snapshot = await fetchClawRouterUsage({
+      token: "proxy-key",
+      baseUrl,
+      timeoutMs: 5000,
+    });
+
+    expect(snapshot.summary).toBe("2 requests · 8 tokens · $0.00 used");
+    expect(connects).toEqual([new URL(baseUrl).host]);
+  });
+
+  it("blocks private-network redirects before a second proxied request", async () => {
     const { baseUrl, requests } = await startUsageServer((_req, res) => {
       res.writeHead(302, { Location: "http://10.0.0.1:9/v1/usage" });
       res.end();
     });
+    const { proxyUrl, connects } = await startConnectProxy();
+    process.env.HTTP_PROXY = proxyUrl;
 
     await expect(
       fetchClawRouterUsage({
@@ -199,5 +293,6 @@ describe("ClawRouter usage", () => {
       }),
     ).rejects.toThrow(/private|internal|blocked/i);
     expect(requests).toEqual(["GET /v1/usage"]);
+    expect(connects).toEqual([new URL(baseUrl).host]);
   });
 });

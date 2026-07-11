@@ -1,3 +1,4 @@
+import { withTrustedEnvProxyGuardedFetchMode } from "openclaw/plugin-sdk/fetch-runtime";
 import type { ProviderUsageSnapshot } from "openclaw/plugin-sdk/provider-usage";
 import { readResponseWithLimit } from "openclaw/plugin-sdk/response-limit-runtime";
 import {
@@ -91,23 +92,25 @@ export async function fetchClawRouterUsage(params: {
   /** Test-only seam; production keeps the shared SSRF guard owning transport. */
   fetchGuard?: ClawRouterUsageFetchGuard;
 }): Promise<ProviderUsageSnapshot> {
-  // Operator-configured baseUrl can redirect anywhere. Match live catalog discovery:
-  // the shared guard owns the dispatcher (no caller fetchImpl), so DNS pinning and
-  // private redirect rejection cannot be bypassed by provider usage proxy wrappers.
+  // Operator-configured baseUrl can redirect anywhere. The guard owns transport and
+  // rechecks every hop; env proxy mode preserves provider-usage proxy support while
+  // direct and NO_PROXY requests retain pinned DNS.
   const rootUrl = normalizeClawRouterRootUrl(params.baseUrl);
   const fetchGuard = params.fetchGuard ?? fetchWithSsrFGuard;
-  const { response, release } = await fetchGuard({
-    url: `${rootUrl}/v1/usage`,
-    init: {
-      headers: {
-        Accept: "application/json",
-        Authorization: `Bearer ${params.token}`,
+  const { response, release } = await fetchGuard(
+    withTrustedEnvProxyGuardedFetchMode({
+      url: `${rootUrl}/v1/usage`,
+      init: {
+        headers: {
+          Accept: "application/json",
+          Authorization: `Bearer ${params.token}`,
+        },
       },
-    },
-    timeoutMs: params.timeoutMs,
-    policy: ssrfPolicyFromHttpBaseUrlAllowedHostname(rootUrl),
-    auditContext: "clawrouter.usage",
-  });
+      timeoutMs: params.timeoutMs,
+      policy: ssrfPolicyFromHttpBaseUrlAllowedHostname(rootUrl),
+      auditContext: "clawrouter.usage",
+    }),
+  );
   try {
     if (!response.ok) {
       throw new Error(`ClawRouter usage request failed (HTTP ${response.status})`);

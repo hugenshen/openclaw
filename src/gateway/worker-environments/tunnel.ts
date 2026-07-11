@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
+import { sliceUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import { computeBackoff, sleepWithAbort, type BackoffPolicy } from "../../infra/backoff.js";
 import { redactSensitiveText } from "../../logging/redact.js";
 import type { WorkerSshEndpoint } from "../../plugins/types.js";
@@ -35,6 +36,17 @@ const REMOTE_SETUP_TIMEOUT_MS = 20_000;
 const WORKSPACE_TIMEOUT_MS = 10 * 60_000;
 const STOP_GRACE_MS = 1_500;
 const STDERR_LIMIT = 4_096;
+
+// Remote SSH stderr/stdout can include emoji paths or locale text. Raw `.slice(-N)`
+// can start on a low surrogate; keep the rolling diagnostic tail UTF-16 safe so
+// processError() does not embed a lone surrogate in the operator-facing Error.
+function appendBoundedDiagnosticTail(current: string, chunk: string): string {
+  const next = `${current}${chunk}`;
+  if (next.length <= STDERR_LIMIT) {
+    return next;
+  }
+  return sliceUtf16Safe(next, Math.max(0, next.length - STDERR_LIMIT));
+}
 const DEFAULT_STABLE_CONNECTION_MS = 30_000;
 const DEFAULT_BACKOFF: BackoffPolicy = {
   initialMs: 250,
@@ -162,7 +174,7 @@ export function createWorkerSshRunner(): WorkerSshRunner {
         if (readySettled) {
           return;
         }
-        stdout = `${stdout}${chunk}`.slice(-STDERR_LIMIT);
+        stdout = appendBoundedDiagnosticTail(stdout, chunk);
         if (stdout.split(/\r?\n/u).includes(READY_MARKER)) {
           readySettled = true;
           resolveReady();
@@ -171,7 +183,7 @@ export function createWorkerSshRunner(): WorkerSshRunner {
       child.stderr.setEncoding("utf8");
       child.stderr.on("error", () => {});
       child.stderr.on("data", (chunk: string) => {
-        stderr = `${stderr}${chunk}`.slice(-STDERR_LIMIT);
+        stderr = appendBoundedDiagnosticTail(stderr, chunk);
       });
       child.once("error", settleReadyError);
       child.once("close", (code, signal) => {

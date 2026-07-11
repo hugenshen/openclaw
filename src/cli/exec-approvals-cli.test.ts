@@ -266,10 +266,10 @@ describe("exec approvals CLI", () => {
     expectGatewayCall(0, "exec.approvals.node.get", { nodeId: "node-1" });
     expectGatewayCall(1, "config.get", {});
     expect(
-      defaultRuntime.log.mock.calls.some(([line]) =>
+      defaultRuntime.log.mock.calls.filter(([line]) =>
         String(line ?? "").includes(SESSION_EXEC_OVERRIDES_NOTE),
       ),
-    ).toBe(false);
+    ).toHaveLength(1);
     expect(runtimeErrors).toHaveLength(0);
   });
 

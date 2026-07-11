@@ -158,7 +158,11 @@ describe("mattermost monitor resources", () => {
       expect(elapsedMs).toBeGreaterThanOrEqual(headerTimeoutMs - 50);
       expect(elapsedMs).toBeLessThan(headerTimeoutMs + 2_000);
     } finally {
-      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await new Promise<void>((resolve) => {
+        server.close(() => {
+          resolve();
+        });
+      });
     }
   });
 

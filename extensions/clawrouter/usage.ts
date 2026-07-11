@@ -1,8 +1,14 @@
 import type { ProviderUsageSnapshot } from "openclaw/plugin-sdk/provider-usage";
 import { readResponseWithLimit } from "openclaw/plugin-sdk/response-limit-runtime";
+import {
+  fetchWithSsrFGuard,
+  ssrfPolicyFromHttpBaseUrlAllowedHostname,
+} from "openclaw/plugin-sdk/ssrf-runtime";
 import { normalizeClawRouterRootUrl } from "./provider-catalog.js";
 
 const CLAWROUTER_USAGE_RESPONSE_MAX_BYTES = 1024 * 1024;
+
+export type ClawRouterUsageFetchGuard = typeof fetchWithSsrFGuard;
 
 type ClawRouterBudget = {
   configured?: unknown;
@@ -82,53 +88,68 @@ export async function fetchClawRouterUsage(params: {
   token: string;
   baseUrl?: string;
   timeoutMs: number;
-  fetchFn: typeof fetch;
+  /** Test-only seam; production keeps the shared SSRF guard owning transport. */
+  fetchGuard?: ClawRouterUsageFetchGuard;
 }): Promise<ProviderUsageSnapshot> {
-  const response = await params.fetchFn(`${normalizeClawRouterRootUrl(params.baseUrl)}/v1/usage`, {
-    headers: {
-      Accept: "application/json",
-      Authorization: `Bearer ${params.token}`,
+  // Operator-configured baseUrl can redirect anywhere. Match live catalog discovery:
+  // the shared guard owns the dispatcher (no caller fetchImpl), so DNS pinning and
+  // private redirect rejection cannot be bypassed by provider usage proxy wrappers.
+  const rootUrl = normalizeClawRouterRootUrl(params.baseUrl);
+  const fetchGuard = params.fetchGuard ?? fetchWithSsrFGuard;
+  const { response, release } = await fetchGuard({
+    url: `${rootUrl}/v1/usage`,
+    init: {
+      headers: {
+        Accept: "application/json",
+        Authorization: `Bearer ${params.token}`,
+      },
     },
-    signal: AbortSignal.timeout(params.timeoutMs),
+    timeoutMs: params.timeoutMs,
+    policy: ssrfPolicyFromHttpBaseUrlAllowedHostname(rootUrl),
+    auditContext: "clawrouter.usage",
   });
-  if (!response.ok) {
-    throw new Error(`ClawRouter usage request failed (HTTP ${response.status})`);
+  try {
+    if (!response.ok) {
+      throw new Error(`ClawRouter usage request failed (HTTP ${response.status})`);
+    }
+    const payload = await readClawRouterUsagePayload(response, params.timeoutMs);
+    const budget = payload.budget;
+    const limitMicros = nonNegativeNumber(budget?.limitMicros);
+    const spentMicros = nonNegativeNumber(budget?.spentMicros);
+    const costMicros = nonNegativeNumber(payload.usage?.summary?.actualCostMicros);
+    const resetAt = resolveMonthlyResetAt(budget?.windowKey);
+    const windows = [];
+    if (budget?.configured === true && limitMicros !== undefined && spentMicros !== undefined) {
+      windows.push({
+        label: "Monthly budget",
+        usedPercent: limitMicros === 0 ? 100 : Math.min(100, (spentMicros / limitMicros) * 100),
+        resetAt,
+      });
+    }
+    const billing: ProviderUsageSnapshot["billing"] =
+      budget?.configured === true && limitMicros !== undefined && spentMicros !== undefined
+        ? [
+            {
+              type: "budget",
+              used: spentMicros / 1_000_000,
+              limit: limitMicros / 1_000_000,
+              unit: "USD",
+              period: "month",
+              resetAt,
+            },
+          ]
+        : costMicros !== undefined
+          ? [{ type: "spend", amount: costMicros / 1_000_000, unit: "USD" }]
+          : undefined;
+    return {
+      provider: "clawrouter" as ProviderUsageSnapshot["provider"],
+      displayName: "ClawRouter",
+      windows,
+      ...(billing ? { billing } : {}),
+      summary: buildSummary(payload),
+      plan: budget?.configured === true ? "Managed monthly budget" : "Unmetered proxy key",
+    };
+  } finally {
+    await release();
   }
-  const payload = await readClawRouterUsagePayload(response, params.timeoutMs);
-  const budget = payload.budget;
-  const limitMicros = nonNegativeNumber(budget?.limitMicros);
-  const spentMicros = nonNegativeNumber(budget?.spentMicros);
-  const costMicros = nonNegativeNumber(payload.usage?.summary?.actualCostMicros);
-  const resetAt = resolveMonthlyResetAt(budget?.windowKey);
-  const windows = [];
-  if (budget?.configured === true && limitMicros !== undefined && spentMicros !== undefined) {
-    windows.push({
-      label: "Monthly budget",
-      usedPercent: limitMicros === 0 ? 100 : Math.min(100, (spentMicros / limitMicros) * 100),
-      resetAt,
-    });
-  }
-  const billing: ProviderUsageSnapshot["billing"] =
-    budget?.configured === true && limitMicros !== undefined && spentMicros !== undefined
-      ? [
-          {
-            type: "budget",
-            used: spentMicros / 1_000_000,
-            limit: limitMicros / 1_000_000,
-            unit: "USD",
-            period: "month",
-            resetAt,
-          },
-        ]
-      : costMicros !== undefined
-        ? [{ type: "spend", amount: costMicros / 1_000_000, unit: "USD" }]
-        : undefined;
-  return {
-    provider: "clawrouter" as ProviderUsageSnapshot["provider"],
-    displayName: "ClawRouter",
-    windows,
-    ...(billing ? { billing } : {}),
-    summary: buildSummary(payload),
-    plan: budget?.configured === true ? "Managed monthly budget" : "Unmetered proxy key",
-  };
 }

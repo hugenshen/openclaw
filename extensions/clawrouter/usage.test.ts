@@ -1,9 +1,55 @@
-import { describe, expect, it, vi } from "vitest";
-import { fetchClawRouterUsage } from "./usage.js";
+import { createServer, type Server } from "node:http";
+import type { AddressInfo } from "node:net";
+import { afterEach, describe, expect, it, vi, type MockedFunction } from "vitest";
+import { fetchClawRouterUsage, type ClawRouterUsageFetchGuard } from "./usage.js";
+
+const runningServers: Server[] = [];
+
+async function startUsageServer(
+  handler: (
+    req: import("node:http").IncomingMessage,
+    res: import("node:http").ServerResponse,
+  ) => void,
+): Promise<{ baseUrl: string; requests: string[] }> {
+  const requests: string[] = [];
+  const server = createServer((req, res) => {
+    requests.push(`${req.method ?? "GET"} ${req.url ?? "/"}`);
+    handler(req, res);
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => resolve());
+  });
+  runningServers.push(server);
+  const address = server.address() as AddressInfo;
+  return {
+    baseUrl: `http://127.0.0.1:${address.port}`,
+    requests,
+  };
+}
+
+afterEach(async () => {
+  await Promise.all(
+    runningServers.splice(0).map(
+      (server) =>
+        new Promise<void>((resolve) => {
+          server.close(() => resolve());
+        }),
+    ),
+  );
+});
+
+function mockFetchGuard(response: Response): MockedFunction<ClawRouterUsageFetchGuard> {
+  return vi.fn(async ({ url }) => ({
+    response,
+    finalUrl: url,
+    release: async () => undefined,
+  }));
+}
 
 describe("ClawRouter usage", () => {
   it("maps the managed monthly budget and usage totals", async () => {
-    const fetchFn = vi.fn(async () =>
+    const fetchGuard = mockFetchGuard(
       Response.json({
         budget: {
           configured: true,
@@ -27,7 +73,7 @@ describe("ClawRouter usage", () => {
       token: "proxy-key",
       baseUrl: "https://clawrouter.example/v1",
       timeoutMs: 5000,
-      fetchFn: fetchFn as unknown as typeof fetch,
+      fetchGuard,
     });
 
     expect(snapshot).toEqual({
@@ -53,27 +99,31 @@ describe("ClawRouter usage", () => {
       summary: "12 requests · 34,567 tokens · $25.00 used",
       plan: "Managed monthly budget",
     });
-    expect(fetchFn).toHaveBeenCalledWith(
-      "https://clawrouter.example/v1/usage",
+    expect(fetchGuard).toHaveBeenCalledWith(
       expect.objectContaining({
-        headers: {
-          Accept: "application/json",
-          Authorization: "Bearer proxy-key",
-        },
+        url: "https://clawrouter.example/v1/usage",
+        init: expect.objectContaining({
+          headers: {
+            Accept: "application/json",
+            Authorization: "Bearer proxy-key",
+          },
+        }),
+        auditContext: "clawrouter.usage",
       }),
     );
+    expect(fetchGuard.mock.calls[0]?.[0]).not.toHaveProperty("fetchImpl");
   });
 
   it("shows aggregate usage for an unmetered key", async () => {
     const snapshot = await fetchClawRouterUsage({
       token: "proxy-key",
       timeoutMs: 5000,
-      fetchFn: vi.fn(async () =>
+      fetchGuard: mockFetchGuard(
         Response.json({
           budget: { configured: false, ledger: "unmetered" },
           usage: { summary: { requestCount: 0, totalTokens: 0, actualCostMicros: 0 } },
         }),
-      ) as unknown as typeof fetch,
+      ),
     });
 
     expect(snapshot.windows).toEqual([]);
@@ -87,9 +137,7 @@ describe("ClawRouter usage", () => {
       fetchClawRouterUsage({
         token: "proxy-key",
         timeoutMs: 5000,
-        fetchFn: vi.fn(
-          async () => new Response("secret details", { status: 403 }),
-        ) as unknown as typeof fetch,
+        fetchGuard: mockFetchGuard(new Response("secret details", { status: 403 })),
       }),
     ).rejects.toThrow("ClawRouter usage request failed (HTTP 403)");
   });
@@ -105,11 +153,51 @@ describe("ClawRouter usage", () => {
       fetchClawRouterUsage({
         token: "proxy-key",
         timeoutMs: 5000,
-        fetchFn: async () =>
+        fetchGuard: mockFetchGuard(
           new Response(oversizedPayload, {
             headers: { "content-type": "application/json" },
           }),
+        ),
       }),
     ).rejects.toThrow("ClawRouter usage response exceeds");
+  });
+
+  it("fetches usage through the production SSRF-guarded transport", async () => {
+    const { baseUrl, requests } = await startUsageServer((req, res) => {
+      expect(req.headers.authorization).toBe("Bearer proxy-key");
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(
+        JSON.stringify({
+          budget: { configured: false, ledger: "unmetered" },
+          usage: { summary: { requestCount: 3, totalTokens: 9, actualCostMicros: 0 } },
+        }),
+      );
+    });
+
+    const snapshot = await fetchClawRouterUsage({
+      token: "proxy-key",
+      baseUrl,
+      timeoutMs: 5000,
+    });
+
+    expect(snapshot.summary).toBe("3 requests · 9 tokens · $0.00 used");
+    expect(snapshot.plan).toBe("Unmetered proxy key");
+    expect(requests).toEqual(["GET /v1/usage"]);
+  });
+
+  it("blocks private-network redirects on the production transport path", async () => {
+    const { baseUrl, requests } = await startUsageServer((_req, res) => {
+      res.writeHead(302, { Location: "http://10.0.0.1:9/v1/usage" });
+      res.end();
+    });
+
+    await expect(
+      fetchClawRouterUsage({
+        token: "proxy-key",
+        baseUrl,
+        timeoutMs: 5000,
+      }),
+    ).rejects.toThrow(/private|internal|blocked/i);
+    expect(requests).toEqual(["GET /v1/usage"]);
   });
 });

@@ -5,8 +5,8 @@ import { Readable } from "node:stream";
 import { Command } from "commander";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
-import * as execApprovals from "../infra/exec-approvals.js";
 import { SESSION_EXEC_OVERRIDES_NOTE } from "../infra/exec-approvals-effective.js";
+import * as execApprovals from "../infra/exec-approvals.js";
 import type { ExecApprovalsFile } from "../infra/exec-approvals.js";
 import { registerExecApprovalsCli, testing } from "./exec-approvals-cli.js";
 
@@ -52,12 +52,23 @@ const mocks = vi.hoisted(() => {
             },
           };
         }
-        return {
+        const snapshot = {
           path: "/tmp/exec-approvals.json",
           exists: true,
           hash: "hash-1",
           file: { version: 1, agents: {} },
         };
+        return method === "exec.approvals.node.get"
+          ? {
+              ...snapshot,
+              resolvedDefaults: {
+                security: "allowlist" as const,
+                ask: "on-miss" as const,
+                askFallback: "deny" as const,
+                autoAllowSkills: false,
+              },
+            }
+          : snapshot;
       }
       return { method, params };
     }),

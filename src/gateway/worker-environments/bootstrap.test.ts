@@ -363,6 +363,39 @@ describe("bootstrapWorker", () => {
     expect(runner.calls[2]?.options.signal).toBeUndefined();
   });
 
+  it("keeps bootstrap failure details on a valid UTF-16 boundary", async () => {
+    // 511 BMP units + one emoji (2 UTF-16 units) crosses the 512-unit detail cap.
+    // Raw `.slice(0, 512)` would leave a lone high surrogate in the Error message.
+    const prefix = "e".repeat(511);
+    const stderr = `${prefix}😀 remote bootstrap diagnostic tail`;
+    const runner = fakeRunner([
+      result({
+        code: 1,
+        stderr,
+      }),
+    ]);
+
+    let message: string | undefined;
+    try {
+      await bootstrapWorker(
+        { ssh: SSH, artifact: BUNDLE },
+        { resolveIdentity, runCommand: runner.runCommand },
+      );
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+
+    expect(message).toBeDefined();
+    expect(message).toContain("Worker bootstrap preflight failed (exit 1):");
+    expect(message).toContain(prefix);
+    expect(message).not.toContain("😀");
+    expect(message).not.toContain("\uFFFD");
+    const detail = message!.slice(message!.indexOf(": ") + 2);
+    expect(detail.length).toBe(511);
+    expect(detail.charCodeAt(detail.length - 1)).toBe("e".charCodeAt(0));
+    expect(detail.charCodeAt(detail.length - 1)).toBeLessThan(0xd800);
+  });
+
   it("rejects unpinned artifact digests before opening SSH", async () => {
     const runner = fakeRunner([]);
 

@@ -4,7 +4,7 @@ import { normalizeOptionalLowercaseString } from "@openclaw/normalization-core/s
 import { listReadOnlyChannelPluginsForConfig } from "../channels/plugins/read-only.js";
 import type { ChannelPlugin } from "../channels/plugins/types.plugin.js";
 import { inspectReadOnlyChannelAccount } from "../channels/read-only-account-inspect.js";
-import { resolveNativeSkillsEnabled } from "../config/commands.js";
+import { resolveNativeCommandsEnabled, resolveNativeSkillsEnabled } from "../config/commands.js";
 import type { OpenClawConfig } from "../config/config.js";
 import type { AgentToolsConfig } from "../config/types.tools.js";
 import { readInstalledPackageVersion } from "../infra/package-update-utils.js";
@@ -12,7 +12,9 @@ import { normalizePluginsConfig } from "../plugins/config-state.js";
 import { loadInstalledPluginIndexInstallRecords } from "../plugins/installed-plugin-index-record-reader.js";
 import {
   createPluginRegistryIdNormalizer,
+  loadPluginManifestRegistryForPluginRegistry,
   loadPluginRegistrySnapshot,
+  type PluginRegistrySnapshot,
 } from "../plugins/plugin-registry.js";
 import { createLazyPromise } from "../shared/lazy-runtime.js";
 import type { SecurityAuditFinding } from "./audit.types.js";
@@ -61,6 +63,106 @@ function readChannelCommandSetting(
     return undefined;
   }
   return (commands as Record<string, unknown>)[key];
+}
+
+type ConfiguredCommandSurfaces = {
+  nativeCommands: string[];
+  nativeSkills: string[];
+};
+
+function listCommandfulExtensionPlugins(params: {
+  cfg: OpenClawConfig;
+  stateDir: string;
+  pluginIndex: PluginRegistrySnapshot;
+  enabledExtensionPluginIds: readonly string[];
+}): string[] {
+  const enabled = new Set(params.enabledExtensionPluginIds);
+  // Persisted registries may omit optional `contributions`; treat that as
+  // unknown and fall back to manifest commandAliases so upgrades do not hide
+  // command-surface exposure until the index is refreshed.
+  const needsManifestFallback = params.pluginIndex.plugins.some((plugin) => {
+    const pluginId = normalizeOptionalLowercaseString(plugin.pluginId);
+    return Boolean(pluginId && enabled.has(pluginId) && plugin.contributions === undefined);
+  });
+  const manifestCommandCounts = needsManifestFallback
+    ? new Map(
+        loadPluginManifestRegistryForPluginRegistry({
+          config: params.cfg,
+          stateDir: params.stateDir,
+          index: params.pluginIndex,
+          pluginIds: params.enabledExtensionPluginIds,
+        }).plugins.map((plugin) => [plugin.id.toLowerCase(), plugin.commandAliases?.length ?? 0]),
+      )
+    : undefined;
+
+  return params.pluginIndex.plugins.flatMap((plugin) => {
+    const pluginId = normalizeOptionalLowercaseString(plugin.pluginId);
+    if (!pluginId || !enabled.has(pluginId)) {
+      return [];
+    }
+    const commandCount = plugin.contributions
+      ? (plugin.contributions.commandAliases?.length ?? 0)
+      : (manifestCommandCounts?.get(pluginId) ?? 0);
+    if (commandCount === 0) {
+      return [];
+    }
+    return [`${pluginId} (${commandCount} command${commandCount === 1 ? "" : "s"})`];
+  });
+}
+
+async function collectConfiguredCommandSurfaces(params: {
+  cfg: OpenClawConfig;
+  stateDir: string;
+}): Promise<ConfiguredCommandSurfaces> {
+  const nativeCommands = new Set<string>();
+  const nativeSkills = new Set<string>();
+  const channelPlugins = listReadOnlyChannelPluginsForConfig(params.cfg, {
+    stateDir: params.stateDir,
+  });
+  await Promise.all(
+    channelPlugins.map(async (plugin) => {
+      if (!(await isChannelPluginConfigured(params.cfg, plugin))) {
+        return;
+      }
+      if (
+        plugin.capabilities.nativeCommands === true &&
+        resolveNativeCommandsEnabled({
+          providerId: plugin.id,
+          providerSetting: readChannelCommandSetting(params.cfg, plugin.id, "native") as
+            | "auto"
+            | boolean
+            | undefined,
+          globalSetting: params.cfg.commands?.native,
+          stateDir: params.stateDir,
+          config: params.cfg,
+          autoDefault: plugin.commands?.nativeCommandsAutoEnabled === true,
+        })
+      ) {
+        nativeCommands.add(plugin.id);
+      }
+      if (
+        (plugin.capabilities.nativeCommands === true ||
+          plugin.commands?.nativeSkillsAutoEnabled === true) &&
+        resolveNativeSkillsEnabled({
+          providerId: plugin.id,
+          providerSetting: readChannelCommandSetting(params.cfg, plugin.id, "nativeSkills") as
+            | "auto"
+            | boolean
+            | undefined,
+          globalSetting: params.cfg.commands?.nativeSkills,
+          stateDir: params.stateDir,
+          config: params.cfg,
+          autoDefault: plugin.commands?.nativeSkillsAutoEnabled === true,
+        })
+      ) {
+        nativeSkills.add(plugin.id);
+      }
+    }),
+  );
+  return {
+    nativeCommands: [...nativeCommands].toSorted(),
+    nativeSkills: [...nativeSkills].toSorted(),
+  };
 }
 
 async function isChannelPluginConfigured(
@@ -261,15 +363,15 @@ export async function collectPluginsTrustFindings(params: {
     stateDir: params.stateDir,
   });
   if (pluginDirs.length > 0) {
+    const pluginIndex = loadPluginRegistrySnapshot({
+      config: params.cfg,
+      stateDir: params.stateDir,
+    });
     const allow = params.cfg.plugins?.allow;
     const allowConfigured = Array.isArray(allow) && allow.length > 0;
 
     if (allowConfigured) {
       const installedPluginIds = new Set(pluginDirs.map((dir) => path.basename(dir).toLowerCase()));
-      const pluginIndex = loadPluginRegistrySnapshot({
-        config: params.cfg,
-        stateDir: params.stateDir,
-      });
       // Allowlist entries may use aliases/canonical ids. Normalize against the
       // current registry before treating an entry as phantom.
       const normalizePluginId = createPluginRegistryIdNormalizer(pluginIndex);
@@ -301,44 +403,25 @@ export async function collectPluginsTrustFindings(params: {
       }
     }
 
+    const commandSurfaces = await collectConfiguredCommandSurfaces(params);
     if (!allowConfigured) {
-      const channelPlugins = listReadOnlyChannelPluginsForConfig(params.cfg, {
-        stateDir: params.stateDir,
-      });
-      const skillCommandsLikelyExposed = (
-        await Promise.all(
-          channelPlugins.map(async (plugin) => {
-            if (
-              plugin.capabilities.nativeCommands !== true &&
-              plugin.commands?.nativeSkillsAutoEnabled !== true
-            ) {
-              return false;
-            }
-            if (!(await isChannelPluginConfigured(params.cfg, plugin))) {
-              return false;
-            }
-            return resolveNativeSkillsEnabled({
-              providerId: plugin.id,
-              providerSetting: readChannelCommandSetting(params.cfg, plugin.id, "nativeSkills") as
-                | "auto"
-                | boolean
-                | undefined,
-              globalSetting: params.cfg.commands?.nativeSkills,
-              stateDir: params.stateDir,
-              autoDefault: plugin.commands?.nativeSkillsAutoEnabled === true,
-            });
-          }),
-        )
-      ).some(Boolean);
+      const hasConfiguredCommandSurface =
+        commandSurfaces.nativeCommands.length > 0 || commandSurfaces.nativeSkills.length > 0;
 
       findings.push({
         checkId: "plugins.extensions_no_allowlist",
-        severity: skillCommandsLikelyExposed ? "critical" : "warn",
+        severity: hasConfiguredCommandSurface ? "critical" : "warn",
         title: "Extensions exist but plugins.allow is not set",
         detail:
           `Found ${pluginDirs.length} extension(s) under ${extensionsDir}. Without plugins.allow, any discovered plugin id may load (depending on config and plugin behavior).` +
-          (skillCommandsLikelyExposed
-            ? "\nNative skill commands are enabled on at least one configured chat surface; treat unpinned/unallowlisted extensions as high risk."
+          (commandSurfaces.nativeCommands.length > 0
+            ? `\nNative commands are enabled on configured chat surfaces: ${commandSurfaces.nativeCommands.join(", ")}.`
+            : "") +
+          (commandSurfaces.nativeSkills.length > 0
+            ? `\nNative skill commands are enabled on configured chat surfaces: ${commandSurfaces.nativeSkills.join(", ")}.`
+            : "") +
+          (hasConfiguredCommandSurface
+            ? "\nTreat unallowlisted extensions as high risk because plugin commands bypass the LLM and run before built-in commands and agent invocation."
             : ""),
         remediation: "Set plugins.allow to an explicit list of plugin ids you trust.",
       });
@@ -349,6 +432,25 @@ export async function collectPluginsTrustFindings(params: {
       pluginDirs,
     });
     if (enabledExtensionPluginIds.length > 0) {
+      const commandfulExtensionPlugins = listCommandfulExtensionPlugins({
+        cfg: params.cfg,
+        stateDir: params.stateDir,
+        pluginIndex,
+        enabledExtensionPluginIds,
+      });
+      if (commandfulExtensionPlugins.length > 0 && commandSurfaces.nativeCommands.length > 0) {
+        findings.push({
+          checkId: "plugins.commands_reachable_chat_surface",
+          severity: "warn",
+          title: "Extension plugin commands may be reachable on configured chat command surfaces",
+          detail:
+            `Enabled extension plugins with registered commands: ${commandfulExtensionPlugins.join(", ")}.\n` +
+            `Configured native command surfaces: ${commandSurfaces.nativeCommands.join(", ")}.\n` +
+            "Plugin commands bypass the LLM and run before built-in commands and agent invocation.",
+          remediation:
+            "Keep plugins.allow explicit, disable commands.native on surfaces that do not need plugin commands, and tighten commands.allowFrom / commands.ownerAllowFrom for untrusted chats.",
+        });
+      }
       const deps = await loadPluginTrustPolicyDeps();
       const enabledPluginSet = new Set(enabledExtensionPluginIds);
       const contexts: Array<{

@@ -2,7 +2,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/config.js";
 import type { PluginInstallRecord } from "../config/types.plugins.js";
 import { writePersistedInstalledPluginIndex } from "../plugins/installed-plugin-index-store.js";
@@ -29,11 +29,14 @@ async function collectPluginsTrustFindingsForTest(
 const mockChannelPlugins = vi.hoisted(() => [
   {
     id: "discord",
-    capabilities: {},
-    commands: {},
+    capabilities: { nativeCommands: true },
+    commands: {
+      nativeCommandsAutoEnabled: true,
+      nativeSkillsAutoEnabled: false,
+    },
     config: {
       listAccountIds: () => [],
-      resolveAccount: () => null,
+      resolveAccount: (cfg: OpenClawConfig) => (cfg.channels?.discord ? {} : null),
     },
   },
 ]);
@@ -46,7 +49,34 @@ const mockPluginRegistryIds = vi.hoisted(() => [
   "lmstudio",
   "memory-core",
   "ollama",
+  "some-plugin",
 ]);
+
+const loadPluginRegistrySnapshotMock = vi.hoisted(() =>
+  vi.fn(() => ({
+    diagnostics: [],
+    plugins: mockPluginRegistryIds.map((pluginId) => ({
+      pluginId,
+      contributions:
+        pluginId === "some-plugin"
+          ? {
+              commandAliases: ["review"],
+            }
+          : undefined,
+    })),
+  })),
+);
+
+const loadPluginManifestRegistryForPluginRegistryMock = vi.hoisted(() =>
+  vi.fn(() => ({
+    plugins: [
+      {
+        id: "some-plugin",
+        commandAliases: [{ name: "review" }],
+      },
+    ],
+  })),
+);
 
 const readInstalledPackageVersionMock = vi.hoisted(() =>
   vi.fn(async (dir: string) => {
@@ -113,20 +143,47 @@ vi.mock("../plugins/config-state.js", () => ({
 
 vi.mock("../plugins/plugin-registry.js", () => ({
   createPluginRegistryIdNormalizer: () => (id: string) => id,
-  loadPluginRegistrySnapshot: () => ({
-    diagnostics: [],
-    plugins: mockPluginRegistryIds.map((pluginId) => ({ pluginId })),
-  }),
+  loadPluginRegistrySnapshot: loadPluginRegistrySnapshotMock,
+  loadPluginManifestRegistryForPluginRegistry: loadPluginManifestRegistryForPluginRegistryMock,
 }));
 
 vi.mock("../config/commands.js", () => ({
-  resolveNativeSkillsEnabled: ({
+  resolveNativeCommandsEnabled: ({
     globalSetting,
     providerSetting,
+    autoDefault,
   }: {
     globalSetting?: boolean | "auto";
     providerSetting?: boolean | "auto";
-  }) => providerSetting === true || (providerSetting === undefined && globalSetting === true),
+    autoDefault?: boolean;
+  }) => {
+    const setting = providerSetting === undefined ? globalSetting : providerSetting;
+    if (setting === true) {
+      return true;
+    }
+    if (setting === false) {
+      return false;
+    }
+    return autoDefault === true;
+  },
+  resolveNativeSkillsEnabled: ({
+    globalSetting,
+    providerSetting,
+    autoDefault,
+  }: {
+    globalSetting?: boolean | "auto";
+    providerSetting?: boolean | "auto";
+    autoDefault?: boolean;
+  }) => {
+    const setting = providerSetting === undefined ? globalSetting : providerSetting;
+    if (setting === true) {
+      return true;
+    }
+    if (setting === false) {
+      return false;
+    }
+    return autoDefault === true;
+  },
 }));
 
 vi.mock("../channels/plugins/read-only.js", () => ({
@@ -530,6 +587,31 @@ describe("security audit extension tool reachability findings", () => {
     });
   });
 
+  beforeEach(() => {
+    loadPluginRegistrySnapshotMock.mockReset();
+    loadPluginRegistrySnapshotMock.mockImplementation(() => ({
+      diagnostics: [],
+      plugins: mockPluginRegistryIds.map((pluginId) => ({
+        pluginId,
+        contributions:
+          pluginId === "some-plugin"
+            ? {
+                commandAliases: ["review"],
+              }
+            : undefined,
+      })),
+    }));
+    loadPluginManifestRegistryForPluginRegistryMock.mockReset();
+    loadPluginManifestRegistryForPluginRegistryMock.mockImplementation(() => ({
+      plugins: [
+        {
+          id: "some-plugin",
+          commandAliases: [{ name: "review" }],
+        },
+      ],
+    }));
+  });
+
   afterAll(async () => {
     homedirSpy?.mockRestore();
     pathResolutionEnvSnapshot?.restore();
@@ -556,9 +638,19 @@ describe("security audit extension tool reachability findings", () => {
       {
         name: "flags enabled extensions when tool policy can expose plugin tools",
         cfg: {
+          channels: {
+            discord: { enabled: true, token: "t" },
+          },
           plugins: { allow: ["some-plugin"] },
         } satisfies OpenClawConfig,
         assert: (findings: Awaited<ReturnType<typeof runSharedExtensionsAudit>>) => {
+          expect(
+            findings.some(
+              (finding) =>
+                finding.checkId === "plugins.commands_reachable_chat_surface" &&
+                finding.severity === "warn",
+            ),
+          ).toBe(true);
           expect(
             findings.some(
               (finding) =>
@@ -571,13 +663,39 @@ describe("security audit extension tool reachability findings", () => {
       {
         name: "does not flag plugin tool reachability when profile is restrictive",
         cfg: {
+          channels: {
+            discord: { enabled: true, token: "t" },
+          },
           plugins: { allow: ["some-plugin"] },
           tools: { profile: "coding" },
         } satisfies OpenClawConfig,
         assert: (findings: Awaited<ReturnType<typeof runSharedExtensionsAudit>>) => {
           expect(
             findings.some(
+              (finding) => finding.checkId === "plugins.commands_reachable_chat_surface",
+            ),
+          ).toBe(true);
+          expect(
+            findings.some(
               (finding) => finding.checkId === "plugins.tools_reachable_permissive_policy",
+            ),
+          ).toBe(false);
+        },
+      },
+      {
+        name: "does not flag plugin command reachability when native commands are disabled",
+        cfg: {
+          channels: {
+            discord: { enabled: true, token: "t" },
+          },
+          plugins: { allow: ["some-plugin"] },
+          commands: { native: false },
+          tools: { profile: "coding" },
+        } satisfies OpenClawConfig,
+        assert: (findings: Awaited<ReturnType<typeof runSharedExtensionsAudit>>) => {
+          expect(
+            findings.some(
+              (finding) => finding.checkId === "plugins.commands_reachable_chat_surface",
             ),
           ).toBe(false);
         },
@@ -590,13 +708,11 @@ describe("security audit extension tool reachability findings", () => {
           },
         } satisfies OpenClawConfig,
         assert: (findings: Awaited<ReturnType<typeof runSharedExtensionsAudit>>) => {
-          expect(
-            findings.some(
-              (finding) =>
-                finding.checkId === "plugins.extensions_no_allowlist" &&
-                finding.severity === "warn",
-            ),
-          ).toBe(true);
+          const finding = findings.find(
+            (entry) => entry.checkId === "plugins.extensions_no_allowlist",
+          );
+          expect(finding?.severity).toBe("critical");
+          expect(finding?.detail).toContain("Native commands are enabled");
         },
       },
       {
@@ -614,13 +730,11 @@ describe("security audit extension tool reachability findings", () => {
           },
         } satisfies OpenClawConfig,
         assert: (findings: Awaited<ReturnType<typeof runSharedExtensionsAudit>>) => {
-          expect(
-            findings.some(
-              (finding) =>
-                finding.checkId === "plugins.extensions_no_allowlist" &&
-                finding.severity === "warn",
-            ),
-          ).toBe(true);
+          const finding = findings.find(
+            (entry) => entry.checkId === "plugins.extensions_no_allowlist",
+          );
+          expect(finding?.severity).toBe("critical");
+          expect(finding?.detail).toContain("plugin commands bypass the LLM");
         },
       },
     ] as const;
@@ -636,6 +750,40 @@ describe("security audit extension tool reachability findings", () => {
         for (const testCase of cases) {
           testCase.assert(await runSharedExtensionsAudit(testCase.cfg));
         }
+      },
+    );
+  });
+
+  it("flags plugin commands when persisted registry omits contributions metadata", async () => {
+    loadPluginRegistrySnapshotMock.mockImplementation(() => ({
+      diagnostics: [],
+      plugins: mockPluginRegistryIds.map((pluginId) => ({
+        pluginId,
+        // Upgrade shape: optional contributions field absent entirely.
+      })),
+    }));
+
+    await withEnvAsync(
+      {
+        DISCORD_BOT_TOKEN: undefined,
+        TELEGRAM_BOT_TOKEN: undefined,
+        SLACK_BOT_TOKEN: undefined,
+        SLACK_APP_TOKEN: undefined,
+      },
+      async () => {
+        const findings = await runSharedExtensionsAudit({
+          channels: {
+            discord: { enabled: true, token: "t" },
+          },
+          plugins: { allow: ["some-plugin"] },
+          tools: { profile: "coding" },
+        });
+        const finding = findings.find(
+          (entry) => entry.checkId === "plugins.commands_reachable_chat_surface",
+        );
+        expect(finding?.severity).toBe("warn");
+        expect(finding?.detail).toContain("some-plugin (1 command)");
+        expect(loadPluginManifestRegistryForPluginRegistryMock).toHaveBeenCalled();
       },
     );
   });

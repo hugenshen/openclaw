@@ -317,6 +317,22 @@ describe("TerminalSessionManager output ring", () => {
     expect(manager.snapshot(outcome.sessionId)).toBe("456789AB");
   });
 
+  it("drops a leading unpaired surrogate when an oversized chunk bisects an emoji", async () => {
+    const fake = makeFakePty();
+    const manager = new TerminalSessionManager({
+      emit: vi.fn(),
+      spawn: async () => fake,
+      scrollbackChars: 8,
+    });
+    const outcome = await manager.open(baseRequest());
+    if (!outcome.ok) {
+      throw new Error("expected open");
+    }
+    // 7 A's + 🤖 (2 units) + 7 B's = 16; raw slice(-8) starts on 🤖's low half.
+    fake.emitData(`${"A".repeat(7)}🤖${"B".repeat(7)}`);
+    expect(manager.snapshot(outcome.sessionId)).toBe("BBBBBBB");
+  });
+
   it("returns undefined for unknown sessions", () => {
     const manager = new TerminalSessionManager({ emit: vi.fn() });
     expect(manager.snapshot("nope")).toBeUndefined();

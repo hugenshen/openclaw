@@ -143,7 +143,6 @@ export const DEFAULT_COPILOT_API_BASE_URL = "https://api.individual.githubcopilo
 const COPILOT_PROVIDER_ID = "github-copilot";
 
 const DEFAULT_GITHUB_COPILOT_DOMAIN = "github.com";
-/** Per-request deadline for GitHub → Copilot API token exchange. */
 const COPILOT_TOKEN_EXCHANGE_TIMEOUT_MS = 30_000;
 
 // Matches a data-residency GHE tenant root (`<tenant>.ghe.com`, single label).
@@ -447,12 +446,11 @@ export async function resolveCopilotApiToken(params: {
     }
   }
 
-  // Without a per-request deadline, a stalled api.<domain>/copilot_internal/v2/token
-  // exchange can hang model/embedding auth refresh forever after cache miss.
   const fetchImpl = params.fetchImpl ?? fetch;
-  let res: Response;
+  const signal = AbortSignal.timeout(COPILOT_TOKEN_EXCHANGE_TIMEOUT_MS);
+  let json: ReturnType<typeof parseCopilotTokenResponse>;
   try {
-    res = await fetchImpl(tokenUrl, {
+    const res = await fetchImpl(tokenUrl, {
       method: "GET",
       headers: {
         Accept: "application/json",
@@ -460,26 +458,26 @@ export async function resolveCopilotApiToken(params: {
         "Copilot-Integration-Id": COPILOT_INTEGRATION_ID,
         ...buildCopilotIdeHeaders({ includeApiVersion: true }),
       },
-      signal: AbortSignal.timeout(COPILOT_TOKEN_EXCHANGE_TIMEOUT_MS),
+      signal,
     });
+
+    if (!res.ok) {
+      await cancelUnreadResponseBody(res);
+      throw new Error(`Copilot token exchange failed: HTTP ${res.status}`);
+    }
+
+    json = parseCopilotTokenResponse(await readProviderJsonResponse(res, "github-copilot.token"));
   } catch (error) {
-    if (error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError")) {
+    // Normalize only the deadline owned by this exchange. Callers still need
+    // transport aborts and provider failures unchanged for correct recovery.
+    if (signal.aborted && error === signal.reason) {
       throw new Error(
-        `Copilot token exchange timed out after ${COPILOT_TOKEN_EXCHANGE_TIMEOUT_MS}ms`,
+        `Copilot token exchange failed: timed out after ${COPILOT_TOKEN_EXCHANGE_TIMEOUT_MS}ms`,
         { cause: error },
       );
     }
     throw error;
   }
-
-  if (!res.ok) {
-    await cancelUnreadResponseBody(res);
-    throw new Error(`Copilot token exchange failed: HTTP ${res.status}`);
-  }
-
-  const json = parseCopilotTokenResponse(
-    await readProviderJsonResponse(res, "github-copilot.token"),
-  );
   const payload: CachedCopilotToken = {
     token: json.token,
     expiresAt: json.expiresAt,

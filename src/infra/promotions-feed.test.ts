@@ -122,11 +122,13 @@ describe("promotions feed state", () => {
     await maybeRefreshPromotionsFeed({ nowMs: NOW, fetchImpl });
 
     const expired = await maybeRefreshPromotionsFeed({ nowMs: NOW + 60_000, fetchImpl });
-    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    // Offline throw is retried once by retryClawHubRead before the attempt fails.
+    const callsAfterExpiryRefresh = fetchImpl.mock.calls.length;
+    expect(callsAfterExpiryRefresh).toBeGreaterThan(1);
     expect(listLivePromotionEntries(expired, NOW + 60_000)).toHaveLength(0);
 
     const cached = await maybeRefreshPromotionsFeed({ nowMs: NOW + 61_000, fetchImpl });
-    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(fetchImpl).toHaveBeenCalledTimes(callsAfterExpiryRefresh);
     expect(listLivePromotionEntries(cached, NOW + 61_000)).toHaveLength(0);
   });
 

@@ -116,6 +116,13 @@ function expectBoundedTimeout(error: unknown, undiciCode: string): void {
   });
 }
 
+async function captureRejection(promise: Promise<unknown>): Promise<unknown> {
+  return await promise.then(
+    () => undefined,
+    (error: unknown) => error,
+  );
+}
+
 describe("MCP HTTP fetch helpers", () => {
   const fetchCalls: Array<{
     url: string | URL | Request;
@@ -321,19 +328,13 @@ describe("MCP HTTP fetch helpers", () => {
       try {
         const pending = fetch(`${baseUrl}/token`, { method: "POST" });
         if (stage === "headers") {
-          const error = await pending.then(
-            () => undefined,
-            (error: unknown) => error,
-          );
+          const error = await captureRejection(pending);
           expect(error).toBeDefined();
           expectBoundedTimeout(error, "UND_ERR_HEADERS_TIMEOUT");
           return;
         }
         const response = await pending;
-        const error = await response.json().then(
-          () => undefined,
-          (error: unknown) => error,
-        );
+        const error = await captureRejection(response.json());
         expect(error).toBeDefined();
         expectBoundedTimeout(error, "UND_ERR_BODY_TIMEOUT");
       } finally {

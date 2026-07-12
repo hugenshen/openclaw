@@ -7,5 +7,16 @@ export function isValidElevenLabsVoiceId(voiceId: string): boolean {
 
 export function normalizeElevenLabsBaseUrl(baseUrl?: string): string {
   const trimmed = baseUrl?.trim();
-  return trimmed?.replace(/\/+$/, "") || DEFAULT_ELEVENLABS_BASE_URL;
+  if (!trimmed) {
+    return DEFAULT_ELEVENLABS_BASE_URL;
+  }
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return DEFAULT_ELEVENLABS_BASE_URL;
+    }
+    return trimmed.replace(/\/+$/, "");
+  } catch {
+    return DEFAULT_ELEVENLABS_BASE_URL;
+  }
 }

@@ -20,7 +20,7 @@ import type { resolvePinnedHostname } from "../infra/net/ssrf.js";
 import { retryAsync } from "../infra/retry.js";
 import { writeSiblingTempFile } from "../infra/sibling-temp-file.js";
 import { resolveConfigDir } from "../utils.js";
-import { downloadMediaToFile, setMediaStoreDownloadNetworkDepsForTest } from "./store.download.js";
+import { downloadMediaToFile, setMediaStoreDownloadDepsForTest } from "./store.download.js";
 import { isFsSafeError, readLocalFileSafely, type FsSafeLikeError } from "./store.runtime.js";
 import { formatMediaLimitMb, MEDIA_FILE_MODE } from "./store.shared.js";
 
@@ -42,7 +42,7 @@ export function setMediaStoreNetworkDepsForTest(deps?: {
   httpsRequest?: RequestImpl;
   resolvePinnedHostname?: ResolvePinnedHostnameImpl;
 }): void {
-  setMediaStoreDownloadNetworkDepsForTest(deps);
+  setMediaStoreDownloadDepsForTest(deps);
 }
 
 function resolveMediaSubdir(subdir: string, caller: string): string {

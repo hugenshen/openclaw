@@ -24,33 +24,28 @@ let resolvePinnedHostnameImpl: ResolvePinnedHostnameImpl = defaultResolvePinnedH
 let responseHeaderTimeoutMsImpl = RESPONSE_HEADER_TIMEOUT_MS;
 let readIdleTimeoutMsImpl = READ_IDLE_TIMEOUT_MS;
 
-/** Overrides remote-download network dependencies for media-store tests. */
-export function setMediaStoreDownloadNetworkDepsForTest(deps?: {
+/** Overrides remote-download dependencies for media-store tests. */
+export function setMediaStoreDownloadDepsForTest(deps?: {
   httpRequest?: RequestImpl;
   httpsRequest?: RequestImpl;
   resolvePinnedHostname?: ResolvePinnedHostnameImpl;
+  responseHeaderTimeoutMs?: number;
+  readIdleTimeoutMs?: number;
 }): void {
   httpRequestImpl = deps?.httpRequest ?? defaultHttpRequestImpl;
   httpsRequestImpl = deps?.httpsRequest ?? defaultHttpsRequestImpl;
   resolvePinnedHostnameImpl = deps?.resolvePinnedHostname ?? defaultResolvePinnedHostnameImpl;
-}
-
-/** Overrides remote-download deadlines for media-store tests. */
-export function setMediaStoreDownloadTimeoutsForTest(deps?: {
-  responseHeaderTimeoutMs?: number;
-  readIdleTimeoutMs?: number;
-}): void {
   responseHeaderTimeoutMsImpl = deps?.responseHeaderTimeoutMs ?? RESPONSE_HEADER_TIMEOUT_MS;
   readIdleTimeoutMsImpl = deps?.readIdleTimeoutMs ?? READ_IDLE_TIMEOUT_MS;
 }
 
-export type MediaDownloadResult = {
+type MediaDownloadResult = {
   headerMime?: string;
   sniffBuffer: Buffer;
   size: number;
 };
 
-export type DownloadMediaToFileParams = {
+type DownloadMediaToFileParams = {
   url: string;
   dest: string;
   headers?: Record<string, string>;

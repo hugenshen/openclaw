@@ -11,8 +11,8 @@ import {
   createOpenClawTestState,
   type OpenClawTestState,
 } from "../test-utils/openclaw-test-state.js";
-import { setMediaStoreDownloadTimeoutsForTest } from "./store.download.js";
-import { saveMediaSource, setMediaStoreNetworkDepsForTest } from "./store.js";
+import { setMediaStoreDownloadDepsForTest } from "./store.download.js";
+import { saveMediaSource } from "./store.js";
 
 const HEADER_TIMEOUT_MS = 40;
 const IDLE_TIMEOUT_MS = 40;
@@ -151,14 +151,12 @@ describe("media store download timeouts", () => {
   beforeEach(() => {
     mode = "ok";
     stalledSocketClosed = undefined;
-    setMediaStoreNetworkDepsForTest({
+    setMediaStoreDownloadDepsForTest({
       resolvePinnedHostname: async (hostname) => ({
         hostname,
         addresses: ["127.0.0.1"],
         lookup: createPinnedLookup({ hostname, addresses: ["127.0.0.1"] }),
       }),
-    });
-    setMediaStoreDownloadTimeoutsForTest({
       responseHeaderTimeoutMs: HEADER_TIMEOUT_MS,
       readIdleTimeoutMs: IDLE_TIMEOUT_MS,
     });
@@ -168,8 +166,7 @@ describe("media store download timeouts", () => {
     for (const socket of Array.from(openSockets)) {
       socket.destroy();
     }
-    setMediaStoreNetworkDepsForTest();
-    setMediaStoreDownloadTimeoutsForTest();
+    setMediaStoreDownloadDepsForTest();
     await fs.rm(mediaRoot, { recursive: true, force: true }).catch(() => {});
   });
 
@@ -181,8 +178,7 @@ describe("media store download timeouts", () => {
       server.close((err) => (err ? reject(err) : resolve()));
     });
     await testState.cleanup();
-    setMediaStoreNetworkDepsForTest();
-    setMediaStoreDownloadTimeoutsForTest();
+    setMediaStoreDownloadDepsForTest();
   });
 
   it("times out when the server accepts a connection but never sends headers", async () => {
@@ -196,12 +192,14 @@ describe("media store download timeouts", () => {
 
   it("times out when hostname resolution never settles", async () => {
     let requestStarted = false;
-    setMediaStoreNetworkDepsForTest({
+    setMediaStoreDownloadDepsForTest({
       httpRequest: (() => {
         requestStarted = true;
         throw new Error("request must not start after DNS timeout");
       }) as unknown as typeof http.request,
       resolvePinnedHostname: async () => await new Promise<never>(() => {}),
+      responseHeaderTimeoutMs: HEADER_TIMEOUT_MS,
+      readIdleTimeoutMs: IDLE_TIMEOUT_MS,
     });
 
     await expect(saveMediaSource(baseUrl)).rejects.toThrow(
@@ -234,16 +232,14 @@ describe("media store download timeouts", () => {
 
   it("keeps a slow response alive while each body chunk makes progress", async () => {
     mode = "slow-progress";
-    setMediaStoreDownloadTimeoutsForTest({
-      responseHeaderTimeoutMs: 500,
-      readIdleTimeoutMs: 200,
-    });
-    setMediaStoreNetworkDepsForTest({
+    setMediaStoreDownloadDepsForTest({
       resolvePinnedHostname: async (hostname) => ({
         hostname,
         addresses: ["127.0.0.1"],
         lookup: createPinnedLookup({ hostname, addresses: ["127.0.0.1"] }),
       }),
+      responseHeaderTimeoutMs: 500,
+      readIdleTimeoutMs: 200,
     });
     const startedAt = Date.now();
     const saved = await saveMediaSource(baseUrl);
@@ -269,15 +265,13 @@ describe("media store download timeouts", () => {
       onResponse(response);
       return request;
     }) as unknown as typeof http.request;
-    setMediaStoreNetworkDepsForTest({
+    setMediaStoreDownloadDepsForTest({
       httpRequest: requestImpl,
       resolvePinnedHostname: async (hostname) => ({
         hostname,
         addresses: ["127.0.0.1"],
         lookup: createPinnedLookup({ hostname, addresses: ["127.0.0.1"] }),
       }),
-    });
-    setMediaStoreDownloadTimeoutsForTest({
       responseHeaderTimeoutMs: 30,
       readIdleTimeoutMs: 200,
     });

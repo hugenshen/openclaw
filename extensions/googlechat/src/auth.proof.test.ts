@@ -2,11 +2,11 @@
 // fetchWithSsrFGuard, exercised against a real hanging node:http loopback.
 //
 // This file does NOT mock openclaw/plugin-sdk/ssrf-runtime, so the production
-// guard (buildTimeoutAbortSignal, dispatcher selection, SSRF hostname policy)
-// runs for every call. Only google-auth.runtime and globalThis.fetch are
-// intercepted: the auth runtime so JWT verification wiring stays hermetic, and
-// globalThis.fetch to redirect the guarded cert request onto a loopback server
-// that never responds, so the real 30s deadline can be observed aborting.
+// timeout composition and hostname policy run for every call. The auth runtime
+// stays hermetic, while globalThis.fetch redirects the guarded request onto a
+// loopback server that never responds. That fetch interception bypasses pinned
+// DNS and dispatcher construction, but lets the real 30s deadline abort a real
+// hanging HTTP request.
 //
 // Mirrors the Google auth transport proof (#103627) / MiniMax OAuth timeout
 // proof (#102862): capture the production timeout callback and fire it only
@@ -15,7 +15,7 @@ import { createServer } from "node:http";
 import type { AddressInfo, Socket } from "node:net";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-const GOOGLECHAT_AUTH_TIMEOUT_MS = 30_000;
+const GOOGLECHAT_CERT_FETCH_TIMEOUT_MS = 30_000;
 const CHAT_CERTS_PATH = "/service_accounts/v1/metadata/x509/chat@system.gserviceaccount.com";
 
 const mockVerifySignedJwt = vi.hoisted(() => vi.fn());
@@ -51,7 +51,7 @@ function captureCertFetchTimeout() {
     timeout?: number,
     ...args: unknown[]
   ) => {
-    if (timeout === GOOGLECHAT_AUTH_TIMEOUT_MS) {
+    if (timeout === GOOGLECHAT_CERT_FETCH_TIMEOUT_MS) {
       fireTimeout = () => callback(...args);
       return 0 as unknown as ReturnType<typeof setTimeout>;
     }
@@ -60,7 +60,9 @@ function captureCertFetchTimeout() {
   return {
     setTimeoutSpy,
     scheduled() {
-      return setTimeoutSpy.mock.calls.some(([, timeout]) => timeout === GOOGLECHAT_AUTH_TIMEOUT_MS);
+      return setTimeoutSpy.mock.calls.some(
+        ([, timeout]) => timeout === GOOGLECHAT_CERT_FETCH_TIMEOUT_MS,
+      );
     },
     fire() {
       if (!fireTimeout) {

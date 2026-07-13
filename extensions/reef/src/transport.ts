@@ -164,6 +164,11 @@ export interface WebSocketLike {
   close(): void;
 }
 
+// Reef uses the WHATWG WebSocket (no `ws` handshakeTimeout). Bound the wait for
+// `open` so a peer that accepts TCP but never upgrades cannot pin start()'s
+// reconnect loop forever on await live().
+const REEF_INBOX_WEBSOCKET_OPEN_TIMEOUT_MS = 30_000;
+
 export function abortableSleep(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise<void>((resolve) => {
     if (signal?.aborted) {
@@ -183,12 +188,16 @@ export function abortableSleep(ms: number, signal?: AbortSignal): Promise<void> 
 export class ReefInboxConnection {
   private cursor = 0;
   private stopped = false;
+  private readonly openTimeoutMs: number;
   constructor(
     readonly client: ReefTransportClient,
     readonly onEntries: (entries: InboxEntry[]) => Promise<void>,
     readonly webSocketFactory: (url: string) => WebSocketLike,
     readonly onState?: (state: "connected" | "disconnected") => void,
-  ) {}
+    openTimeoutMs: number = REEF_INBOX_WEBSOCKET_OPEN_TIMEOUT_MS,
+  ) {
+    this.openTimeoutMs = openTimeoutMs;
+  }
 
   async start(signal?: AbortSignal): Promise<void> {
     let delay = 250;
@@ -233,11 +242,13 @@ export class ReefInboxConnection {
       // invocation settles, so late events from an abandoned socket cannot
       // overwrite the lifecycle state of its replacement (or of a stopped channel).
       let settled = false;
+      let opened = false;
       const settle = (error?: Error) => {
         if (settled) {
           return;
         }
         settled = true;
+        clearTimeout(openTimer);
         this.onState?.("disconnected");
         if (error) {
           reject(error);
@@ -245,6 +256,18 @@ export class ReefInboxConnection {
           resolve();
         }
       };
+      // WHATWG WebSocket has no handshakeTimeout; fail the open wait so start()
+      // can backoff/reconnect instead of hanging until channel abort.
+      const openTimer = setTimeout(() => {
+        if (opened || settled) {
+          return;
+        }
+        // Reject before close so the close listener cannot resolve a clean disconnect
+        // and skip start()'s backoff path for a stalled handshake.
+        settle(new Error("reef inbox websocket open timed out"));
+        socket.close();
+      }, this.openTimeoutMs);
+      openTimer.unref?.();
       signal?.addEventListener(
         "abort",
         () => {
@@ -254,9 +277,12 @@ export class ReefInboxConnection {
         { once: true },
       );
       socket.addEventListener("open", () => {
-        if (!settled) {
-          this.onState?.("connected");
+        if (settled) {
+          return;
         }
+        opened = true;
+        clearTimeout(openTimer);
+        this.onState?.("connected");
       });
       socket.addEventListener("message", (event) => {
         try {

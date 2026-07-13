@@ -7,6 +7,7 @@ import { withFetchPreconnect } from "openclaw/plugin-sdk/test-env";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   beginAppRegistration,
+  FEISHU_APP_REGISTRATION_TIMEOUT_MS,
   type FeishuAppRegistrationFetch,
   pollAppRegistration,
   printQrCode,
@@ -252,6 +253,40 @@ describe("Feishu app registration", () => {
       { small: true },
     );
     expect(writeSpy).toHaveBeenCalledWith("terminal-qr\n");
+  });
+
+  it("times out registration POSTs when accounts never return headers", async () => {
+    expect(FEISHU_APP_REGISTRATION_TIMEOUT_MS).toBe(10_000);
+    await withRegistrationServer(
+      // Accept TCP but never write headers — idle body timers never start.
+      (_req, _res) => {},
+      async (options) => {
+        const started = Date.now();
+        const outcome = await beginAppRegistration("feishu", {
+          ...options,
+          // Stand-in for FEISHU_APP_REGISTRATION_TIMEOUT_MS; keep the suite fast.
+          timeoutMs: 80,
+        }).then(
+          (value) => ({ ok: true as const, value }),
+          (error: unknown) => ({ ok: false as const, error }),
+        );
+        const elapsedMs = Date.now() - started;
+        expect(outcome.ok).toBe(false);
+        if (!outcome.ok) {
+          expect(outcome.error).toMatchObject({
+            name: "TimeoutError",
+            message: "request timed out",
+          });
+        }
+        expect(elapsedMs).toBeGreaterThanOrEqual(60);
+        expect(elapsedMs).toBeLessThan(2_000);
+        console.log(
+          `[feishu fetchFeishuJson hang proof] timed_out=${!outcome.ok} name=${
+            outcome.ok ? "n/a" : (outcome.error as Error).name
+          } elapsed_ms=${elapsedMs} production_timeout_ms=${FEISHU_APP_REGISTRATION_TIMEOUT_MS}`,
+        );
+      },
+    );
   });
 
   // over-cap: body > 16 MiB, no Content-Length. The bounded reader cancels

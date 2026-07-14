@@ -1,3 +1,5 @@
+// ClickClack tests cover http client plugin behavior.
+import { readFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { describe, expect, it, vi } from "vitest";
 import { WebSocketServer } from "ws";
@@ -694,5 +696,11 @@ describe("createClickClackClient websocket", () => {
     const result = await runFrameCase("x".repeat(CLICKCLACK_INBOUND_JSON_LIMIT_BYTES + 1));
     expect(result.delivered).toBe(false);
     expect(result.error).toMatch(/max payload/i);
+  });
+
+  it("uses a 30s handshakeTimeout matching Slack relay / Mattermost", async () => {
+    const source = await readFile(new URL("./http-client.ts", import.meta.url), "utf8");
+    expect(source).toMatch(/const CLICKCLACK_WEBSOCKET_HANDSHAKE_TIMEOUT_MS = 30_000/);
+    expect(source).toMatch(/handshakeTimeout: CLICKCLACK_WEBSOCKET_HANDSHAKE_TIMEOUT_MS/);
   });
 });

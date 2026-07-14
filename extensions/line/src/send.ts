@@ -11,6 +11,7 @@ import { resolveLineChannelAccessToken } from "./channel-access-token.js";
 import { validateLineMediaUrl } from "./outbound-media.js";
 import { createLineSendReceipt } from "./send-receipt.js";
 import type { LineSendResult } from "./types.js";
+import { readCachedLineUserProfile, writeCachedLineUserProfile } from "./user-profile-cache.js";
 
 type Message = messagingApi.Message;
 type TextMessage = messagingApi.TextMessage;
@@ -23,12 +24,6 @@ type FlexContainer = messagingApi.FlexContainer;
 type TemplateMessage = messagingApi.TemplateMessage;
 type QuickReply = messagingApi.QuickReply;
 type QuickReplyItem = messagingApi.QuickReplyItem;
-
-const userProfileCache = new Map<
-  string,
-  { displayName: string; pictureUrl?: string; fetchedAt: number }
->();
-const PROFILE_CACHE_TTL_MS = 5 * 60 * 1000;
 
 interface LineSendOpts {
   cfg: OpenClawConfig;
@@ -496,9 +491,9 @@ export async function getUserProfile(
   const useCache = opts.useCache ?? true;
 
   if (useCache) {
-    const cached = userProfileCache.get(userId);
-    if (cached && Date.now() - cached.fetchedAt < PROFILE_CACHE_TTL_MS) {
-      return { displayName: cached.displayName, pictureUrl: cached.pictureUrl };
+    const cached = readCachedLineUserProfile(userId);
+    if (cached) {
+      return cached;
     }
   }
 
@@ -511,10 +506,7 @@ export async function getUserProfile(
       pictureUrl: profile.pictureUrl,
     };
 
-    userProfileCache.set(userId, {
-      ...result,
-      fetchedAt: Date.now(),
-    });
+    writeCachedLineUserProfile(userId, result);
 
     return result;
   } catch (err) {

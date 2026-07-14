@@ -1,6 +1,8 @@
 // Line tests cover send plugin behavior.
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import "./user-profile-cache.js";
+import { resetLineUserProfileCacheForTests } from "./user-profile-cache.test-helpers.js";
 
 const {
   pushMessageMock,
@@ -114,6 +116,7 @@ describe("LINE send helpers", () => {
 
   beforeEach(() => {
     vi.setSystemTime(fixedSentAt);
+    resetLineUserProfileCacheForTests();
     pushMessageMock.mockReset();
     replyMessageMock.mockReset();
     showLoadingAnimationMock.mockReset();
@@ -451,6 +454,62 @@ describe("LINE send helpers", () => {
       pictureUrl: "https://example.com/peter.jpg",
     });
     expect(second).toEqual(first);
+    expect(getProfileMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("evicts oldest profile cache entries once the cache exceeds its cap", async () => {
+    getProfileMock.mockImplementation(async (userId: string) => ({
+      displayName: `User ${userId}`,
+      pictureUrl: undefined,
+    }));
+
+    // Production inbound path resolves names through getUserDisplayName → getUserProfile.
+    const firstUserId = "U-first";
+    await expect(sendModule.getUserDisplayName(firstUserId, { cfg: LINE_TEST_CFG })).resolves.toBe(
+      `User ${firstUserId}`,
+    );
+    expect(getProfileMock).toHaveBeenCalledTimes(1);
+
+    for (let i = 1; i <= 1024; i += 1) {
+      await sendModule.getUserDisplayName(`U-fill-${i}`, { cfg: LINE_TEST_CFG });
+    }
+    expect(getProfileMock).toHaveBeenCalledTimes(1025);
+
+    getProfileMock.mockClear();
+    await expect(sendModule.getUserDisplayName(firstUserId, { cfg: LINE_TEST_CFG })).resolves.toBe(
+      `User ${firstUserId}`,
+    );
+    expect(getProfileMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps recently touched profile entries under the cache cap", async () => {
+    getProfileMock.mockImplementation(async (userId: string) => ({
+      displayName: `User ${userId}`,
+      pictureUrl: undefined,
+    }));
+
+    await sendModule.getUserDisplayName("U-keep", { cfg: LINE_TEST_CFG });
+    for (let i = 1; i <= 1023; i += 1) {
+      await sendModule.getUserDisplayName(`U-fill-${i}`, { cfg: LINE_TEST_CFG });
+    }
+    expect(getProfileMock).toHaveBeenCalledTimes(1024);
+
+    // Touch moves U-keep to newest insertion order before the next write prunes.
+    await sendModule.getUserDisplayName("U-keep", { cfg: LINE_TEST_CFG });
+    expect(getProfileMock).toHaveBeenCalledTimes(1024);
+
+    await sendModule.getUserDisplayName("U-new", { cfg: LINE_TEST_CFG });
+    expect(getProfileMock).toHaveBeenCalledTimes(1025);
+
+    getProfileMock.mockClear();
+    await expect(sendModule.getUserDisplayName("U-keep", { cfg: LINE_TEST_CFG })).resolves.toBe(
+      "User U-keep",
+    );
+    expect(getProfileMock).toHaveBeenCalledTimes(0);
+
+    await expect(sendModule.getUserDisplayName("U-fill-1", { cfg: LINE_TEST_CFG })).resolves.toBe(
+      "User U-fill-1",
+    );
     expect(getProfileMock).toHaveBeenCalledTimes(1);
   });
 

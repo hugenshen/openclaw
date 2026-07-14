@@ -1,108 +1,77 @@
-// Real-socket + generated-page proof: hung Mini App auth must abort via the
-// page AbortController timer and surface the same expired/retry status.
-import { createServer, type Server } from "node:http";
-import type { AddressInfo } from "node:net";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+/* @vitest-environment jsdom */
+
+import { describe, expect, it, vi } from "vitest";
 import { renderTelegramMiniAppPage, TELEGRAM_MINIAPP_EXPIRED_MESSAGE } from "./page.js";
 
-const TELEGRAM_MINIAPP_AUTH_TIMEOUT_MS = 15_000;
+describe("telegram miniapp auth timeout", () => {
+  it("executes the generated page and expires a hung auth request", async () => {
+    let scheduledTimeout: { callback: () => void; delayMs: number; id: number } | undefined;
+    const clearTimeoutSpy = vi.fn();
+    const ready = vi.fn();
+    const fetchMock = vi.fn();
 
-describe("telegram miniapp auth AbortController timeout", () => {
-  let server: Server;
-  let baseUrl: string;
-  let authRequests = 0;
-
-  beforeAll(async () => {
-    server = createServer((req, res) => {
-      const url = new URL(req.url ?? "/", "http://127.0.0.1");
-      if (req.method === "GET" && url.pathname === "/") {
-        res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-        res.end(
-          renderTelegramMiniAppPage({
-            accountId: "ops",
-            scriptNonce: "test-nonce",
-          }),
-        );
-        return;
-      }
-      if (req.method === "POST" && url.pathname === "/auth") {
-        authRequests += 1;
-        // Accept the TCP connection and request body, then hang forever so the
-        // page AbortController timer is the only recovery path.
-        req.resume();
-        return;
-      }
-      res.writeHead(404);
-      res.end("not found");
+    const rendered = new DOMParser().parseFromString(
+      renderTelegramMiniAppPage({ accountId: "ops", scriptNonce: "test-nonce" }),
+      "text/html",
+    );
+    const bootstrap = rendered.querySelector("script:not([src])")?.textContent;
+    if (!bootstrap) {
+      throw new Error("generated Mini App page is missing its bootstrap script");
+    }
+    document.body.innerHTML = rendered.body.innerHTML;
+    Object.defineProperty(window, "Telegram", {
+      configurable: true,
+      value: { WebApp: { initData: "signed-init-data", ready } },
     });
-    await new Promise<void>((resolve) => {
-      server.listen(0, "127.0.0.1", resolve);
-    });
-    baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-  });
-
-  afterAll(async () => {
-    await new Promise<void>((resolve, reject) => {
-      server.close((error) => (error ? reject(error) : resolve()));
-    });
-  });
-
-  it("embeds AbortController timer cancellation in the production bootstrap page", async () => {
-    const page = await fetch(`${baseUrl}/`);
-    expect(page.status).toBe(200);
-    const html = await page.text();
-    expect(html).toContain("const authController = new AbortController()");
-    expect(html).toContain(`}, ${TELEGRAM_MINIAPP_AUTH_TIMEOUT_MS});`);
-    expect(html).toContain("signal: authController.signal");
-    expect(html).toContain("clearTimeout(authTimeout)");
-    expect(html).not.toContain("AbortSignal.timeout");
-    expect(TELEGRAM_MINIAPP_AUTH_TIMEOUT_MS).toBe(15_000);
-  });
-
-  it("aborts a hung same-origin auth fetch and shows the expired status", async () => {
-    let statusText = "Opening dashboard...";
-    const showExpired = () => {
-      statusText = TELEGRAM_MINIAPP_EXPIRED_MESSAGE;
+    const scheduleTimeout = (callback: () => void, delayMs: number) => {
+      scheduledTimeout = { callback, delayMs, id: 1 };
+      return 1;
     };
+    fetchMock.mockImplementation(
+      (_input: string, init: { signal: AbortSignal }) =>
+        new Promise((_resolve, reject) => {
+          init.signal.addEventListener(
+            "abort",
+            () => reject(new DOMException("Aborted", "AbortError")),
+            { once: true },
+          );
+        }),
+    );
 
-    const startedAt = Date.now();
-    // Mirror the production Mini App page cancellation: AbortController + timer,
-    // cleared after settle so healthy auth is not raced by a late abort.
-    const authController = new AbortController();
-    const authTimeout = setTimeout(() => {
-      authController.abort();
-    }, TELEGRAM_MINIAPP_AUTH_TIMEOUT_MS);
-    await fetch(`${baseUrl}/auth`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ initData: "hang", accountId: "ops" }),
-      credentials: "same-origin",
-      signal: authController.signal,
-    })
-      .then(async (response) => {
-        if (!response.ok) {
-          throw new Error("auth failed");
-        }
-        return await response.json();
-      })
-      .then((payload: { controlUiUrl: string; gatewayUrl: string; bootstrapToken: string }) => {
-        const next = new URL(payload.controlUiUrl);
-        next.hash =
-          "gatewayUrl=" +
-          encodeURIComponent(payload.gatewayUrl) +
-          "&bootstrapToken=" +
-          encodeURIComponent(payload.bootstrapToken);
-        throw new Error(`unexpected redirect to ${next.toString()}`);
-      })
-      .catch(showExpired)
-      .then(() => {
-        clearTimeout(authTimeout);
+    try {
+      // oxlint-disable-next-line typescript/no-implied-eval -- Execute the generated bootstrap itself so the test cannot drift into a reimplementation.
+      new Function(
+        "window",
+        "document",
+        "AbortController",
+        "setTimeout",
+        "clearTimeout",
+        "fetch",
+        bootstrap,
+      )(window, document, AbortController, scheduleTimeout, clearTimeoutSpy, fetchMock);
+
+      expect(ready).toHaveBeenCalledTimes(1);
+      expect(fetchMock).toHaveBeenCalledWith(
+        "auth",
+        expect.objectContaining({
+          method: "POST",
+          credentials: "same-origin",
+          signal: expect.any(AbortSignal),
+        }),
+      );
+      expect(scheduledTimeout?.delayMs).toBe(15_000);
+
+      scheduledTimeout?.callback();
+
+      await vi.waitFor(() => {
+        expect(document.getElementById("status")?.textContent).toBe(
+          TELEGRAM_MINIAPP_EXPIRED_MESSAGE,
+        );
       });
-
-    const elapsedMs = Date.now() - startedAt;
-    expect(authRequests).toBeGreaterThan(0);
-    expect(statusText).toBe(TELEGRAM_MINIAPP_EXPIRED_MESSAGE);
-    expect(elapsedMs).toBeGreaterThanOrEqual(TELEGRAM_MINIAPP_AUTH_TIMEOUT_MS);
-    expect(elapsedMs).toBeLessThan(TELEGRAM_MINIAPP_AUTH_TIMEOUT_MS + 2_000);
-  }, 20_000);
+      expect(clearTimeoutSpy).toHaveBeenCalledWith(scheduledTimeout?.id);
+    } finally {
+      Reflect.deleteProperty(window, "Telegram");
+      document.body.replaceChildren();
+    }
+  });
 });

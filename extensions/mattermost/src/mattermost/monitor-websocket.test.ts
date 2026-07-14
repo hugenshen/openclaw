@@ -1,13 +1,23 @@
 // Mattermost tests cover monitor websocket plugin behavior.
 import { once } from "node:events";
+import { readFile } from "node:fs/promises";
+import net from "node:net";
+import type { AddressInfo } from "node:net";
+import { fileURLToPath } from "node:url";
 import { expectDefined } from "@openclaw/normalization-core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { WebSocketServer } from "ws";
+import WebSocket, { WebSocketServer } from "ws";
 import type { RuntimeEnv } from "../../runtime-api.js";
 import {
   createMattermostConnectOnce,
   type MattermostWebSocketFactory,
 } from "./monitor-websocket.js";
+import { runWithReconnect } from "./reconnect.js";
+
+/** Matches production MATTERMOST_WEBSOCKET_HANDSHAKE_TIMEOUT_MS / Slack relay. */
+const EXPECTED_HANDSHAKE_TIMEOUT_MS = 30_000;
+/** Matches production MATTERMOST_WEBSOCKET_MAX_PAYLOAD_BYTES. */
+const MATTERMOST_WEBSOCKET_MAX_PAYLOAD_BYTES = 16 * 1024 * 1024;
 
 function countMatching<T>(items: readonly T[], predicate: (item: T) => boolean): number {
   let count = 0;
@@ -580,5 +590,136 @@ describe("mattermost websocket monitor", () => {
     socket.emitClose(1000);
     await connected;
     vi.useRealTimers();
+  });
+
+  it("uses a 30s handshakeTimeout matching Slack relay", async () => {
+    // Observe the production default-factory wiring without exporting test-only
+    // symbols (knip unused-export ratchet). Removing handshakeTimeout from the
+    // builder or default factory fails this regression.
+    const source = await readFile(
+      fileURLToPath(new URL("./monitor-websocket.ts", import.meta.url)),
+      "utf8",
+    );
+    expect(source).toMatch(/const MATTERMOST_WEBSOCKET_HANDSHAKE_TIMEOUT_MS = 30_000/);
+    expect(source).toMatch(/handshakeTimeout: MATTERMOST_WEBSOCKET_HANDSHAKE_TIMEOUT_MS/);
+    expect(source).toMatch(/buildMattermostWebSocketClientOptions\(agent\)/);
+    expect(source).toMatch(/new WebSocket\([\s\S]*?buildMattermostWebSocketClientOptions\(agent\)/);
+    expect(EXPECTED_HANDSHAKE_TIMEOUT_MS).toBe(30_000);
+  });
+
+  it("fails connect when the websocket handshake never completes", async () => {
+    // Accept TCP but never complete the websocket upgrade so missing
+    // handshakeTimeout would leave createMattermostConnectOnce waiting forever.
+    const accepted: net.Socket[] = [];
+    const server = net.createServer((socket) => {
+      accepted.push(socket);
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", () => resolve());
+    });
+    const { port } = server.address() as AddressInfo;
+
+    try {
+      const connectOnce = createMattermostConnectOnce({
+        wsUrl: `ws://127.0.0.1:${port}`,
+        botToken: "token",
+        runtime: testRuntime(),
+        nextSeq: () => 1,
+        onPosted: async () => {},
+        // Short floor for hang repro; production default factory uses
+        // MATTERMOST_WEBSOCKET_HANDSHAKE_TIMEOUT_MS (30s) via
+        // buildMattermostWebSocketClientOptions (asserted above).
+        webSocketFactory: (url) =>
+          new WebSocket(url, {
+            handshakeTimeout: 200,
+            maxPayload: MATTERMOST_WEBSOCKET_MAX_PAYLOAD_BYTES,
+          }) as ReturnType<MattermostWebSocketFactory>,
+      });
+
+      const outcome = await connectOnce().then(
+        () => ({ ok: true as const }),
+        (error: unknown) => ({ ok: false as const, error }),
+      );
+      expect(outcome.ok).toBe(false);
+      if (!outcome.ok) {
+        // ws surfaces handshake timeout as error then close-before-open (1006).
+        expect(outcome.error).toMatchObject({ name: "WebSocketClosedBeforeOpenError" });
+        console.log(
+          `[mattermost handshake proof] timed_out=true name=${
+            outcome.error instanceof Error ? outcome.error.name : typeof outcome.error
+          } message=${
+            outcome.error instanceof Error ? outcome.error.message : String(outcome.error)
+          }`,
+        );
+      }
+    } finally {
+      for (const socket of accepted) {
+        socket.destroy();
+      }
+      await new Promise<void>((resolve, reject) => {
+        server.close((err) => (err ? reject(err) : resolve()));
+      });
+    }
+  });
+
+  it("returns control to reconnect after a stalled handshake", async () => {
+    const accepted: net.Socket[] = [];
+    const server = net.createServer((socket) => {
+      accepted.push(socket);
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", () => resolve());
+    });
+    const { port } = server.address() as AddressInfo;
+
+    const runtime = testRuntime();
+    const reconnectDelays: number[] = [];
+    const connectErrors: string[] = [];
+    const connectOnce = createMattermostConnectOnce({
+      wsUrl: `ws://127.0.0.1:${port}`,
+      botToken: "token",
+      runtime,
+      nextSeq: () => 1,
+      onPosted: async () => {},
+      webSocketFactory: (url) =>
+        new WebSocket(url, {
+          handshakeTimeout: 200,
+          maxPayload: MATTERMOST_WEBSOCKET_MAX_PAYLOAD_BYTES,
+        }) as ReturnType<MattermostWebSocketFactory>,
+    });
+
+    try {
+      await runWithReconnect(connectOnce, {
+        initialDelayMs: 50,
+        maxDelayMs: 50,
+        jitterRatio: 0,
+        shouldReconnect: ({ attempt }) => attempt < 1,
+        onError: (err) => {
+          connectErrors.push(err instanceof Error ? err.name : String(err));
+        },
+        onReconnect: (delayMs) => {
+          reconnectDelays.push(delayMs);
+        },
+      });
+
+      // attempt 0 times out → reconnect; attempt 1 times out → stop.
+      expect(connectErrors).toEqual([
+        "WebSocketClosedBeforeOpenError",
+        "WebSocketClosedBeforeOpenError",
+      ]);
+      expect(reconnectDelays).toEqual([50]);
+      console.log(
+        `[mattermost handshake reconnect proof] timeout_then_reconnect=true errors=${connectErrors.join(",")} reconnect_delays_ms=${reconnectDelays.join(",")}`,
+      );
+    } finally {
+      for (const socket of accepted) {
+        socket.destroy();
+      }
+      await new Promise<void>((resolve, reject) => {
+        server.close((err) => (err ? reject(err) : resolve()));
+      });
+    }
   });
 });

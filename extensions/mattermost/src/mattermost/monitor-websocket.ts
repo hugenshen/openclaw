@@ -47,6 +47,8 @@ export type MattermostWebSocketFactory = (url: string) => MattermostWebSocketLik
 // Mattermost events can include double-encoded post props plus server/plugin metadata.
 // Keep channel-compatible headroom while bounding ws's 100 MiB default before parsing.
 const MATTERMOST_WEBSOCKET_MAX_PAYLOAD_BYTES = 16 * 1024 * 1024;
+// Bound websocket upgrade waits the same way Slack relay / browser CDP do.
+const MATTERMOST_WEBSOCKET_HANDSHAKE_TIMEOUT_MS = 30_000;
 const MattermostEventPayloadSchema = z.object({
   event: z.string().optional(),
   data: z
@@ -114,12 +116,28 @@ type CreateMattermostConnectOnceOpts = {
   pongTimeoutMs?: number;
 };
 
-const defaultMattermostWebSocketFactory: MattermostWebSocketFactory = (url) => {
-  const agent = createDebugProxyWebSocketAgent(resolveDebugProxySettings());
-  return new WebSocket(url, {
+/**
+ * Canonical Mattermost `ws` client options. Keep handshakeTimeout here so the
+ * default factory and regressions share one production wiring surface.
+ */
+function buildMattermostWebSocketClientOptions(
+  agent?: NonNullable<ReturnType<typeof createDebugProxyWebSocketAgent>>,
+) {
+  return {
     ...(agent ? { agent } : {}),
     maxPayload: MATTERMOST_WEBSOCKET_MAX_PAYLOAD_BYTES,
-  }) as MattermostWebSocketLike;
+    // Without this, createMattermostConnectOnce waits forever for `open` when the
+    // TCP peer accepts but never completes the websocket upgrade.
+    handshakeTimeout: MATTERMOST_WEBSOCKET_HANDSHAKE_TIMEOUT_MS,
+  };
+}
+
+const defaultMattermostWebSocketFactory: MattermostWebSocketFactory = (url) => {
+  const agent = createDebugProxyWebSocketAgent(resolveDebugProxySettings());
+  return new WebSocket(
+    url,
+    buildMattermostWebSocketClientOptions(agent),
+  ) as MattermostWebSocketLike;
 };
 
 function parsePostedPayload(

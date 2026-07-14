@@ -126,6 +126,10 @@ describe("registerTelegramMiniAppRoutes", () => {
     expect(res.statusCode).toBe(200);
     expect(res.body).toContain('const accountId = "ops";');
     expect(res.body).toContain("new URL(payload.controlUiUrl)");
+    expect(res.body).toContain("const authController = new AbortController()");
+    expect(res.body).toContain("signal: authController.signal");
+    expect(res.body).toContain("clearTimeout(authTimeout)");
+    expect(res.body).not.toContain("AbortSignal.timeout");
     expect(resolveTelegramMiniAppUrls).not.toHaveBeenCalled();
   });
 

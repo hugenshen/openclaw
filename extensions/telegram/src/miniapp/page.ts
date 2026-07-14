@@ -4,6 +4,9 @@ import { escapeHtml } from "openclaw/plugin-sdk/text-utility-runtime";
 export const TELEGRAM_MINIAPP_EXPIRED_MESSAGE =
   "This link expired. Reopen the dashboard from your bot chat.";
 
+/** Bound hung Telegram WebView auth fetches so the page can show the expired/retry state. */
+const TELEGRAM_MINIAPP_AUTH_TIMEOUT_MS = 15_000;
+
 export function renderTelegramMiniAppPage(params: {
   accountId: string;
   scriptNonce: string;
@@ -43,11 +46,18 @@ export function renderTelegramMiniAppPage(params: {
       showExpired();
     } else {
       webApp.ready();
+      // AbortController + timer stays compatible with older Telegram WebViews;
+      // clear the timer after settle so healthy auth is not raced by a late abort.
+      const authController = new AbortController();
+      const authTimeout = setTimeout(function () {
+        authController.abort();
+      }, ${TELEGRAM_MINIAPP_AUTH_TIMEOUT_MS});
       fetch("auth", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ initData, accountId }),
-        credentials: "same-origin"
+        credentials: "same-origin",
+        signal: authController.signal
       }).then(async (response) => {
         if (!response.ok) {
           throw new Error("auth failed");
@@ -58,7 +68,9 @@ export function renderTelegramMiniAppPage(params: {
         next.hash = "gatewayUrl=" + encodeURIComponent(payload.gatewayUrl) +
           "&bootstrapToken=" + encodeURIComponent(payload.bootstrapToken);
         location.replace(next.toString());
-      }).catch(showExpired);
+      }).catch(showExpired).then(function () {
+        clearTimeout(authTimeout);
+      });
     }
   </script>
 </body>

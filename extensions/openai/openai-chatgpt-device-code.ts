@@ -5,11 +5,13 @@ import {
 } from "openclaw/plugin-sdk/number-runtime";
 import { readResponseTextLimited } from "openclaw/plugin-sdk/provider-http";
 import { resolveCodexAccessTokenExpiry } from "./openai-chatgpt-auth-identity.js";
+import { buildOAuthRequestSignal } from "./openai-chatgpt-oauth-abort.runtime.js";
 import { trimNonEmptyString } from "./openai-chatgpt-shared.js";
 
 const OPENAI_AUTH_BASE_URL = "https://auth.openai.com";
 const OPENAI_CODEX_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
 const OPENAI_CODEX_DEVICE_CODE_TIMEOUT_MS = 15 * 60_000;
+const OPENAI_CODEX_DEVICE_CODE_REQUEST_TIMEOUT_MS = 30_000;
 const OPENAI_CODEX_DEVICE_CODE_DEFAULT_INTERVAL_MS = 5_000;
 const OPENAI_CODEX_DEVICE_CODE_MIN_INTERVAL_MS = 1_000;
 const OPENAI_CODEX_DEVICE_CALLBACK_URL = `${OPENAI_AUTH_BASE_URL}/deviceauth/callback`;
@@ -69,6 +71,11 @@ type DeviceCodeAuthorizationCode = {
   codeVerifier: string;
 };
 
+type DeviceCodeHttpResult = {
+  response: Response;
+  bodyText: string;
+};
+
 function parseJsonObject(text: string): Record<string, unknown> | null {
   try {
     const parsed = JSON.parse(text);
@@ -99,6 +106,87 @@ function sanitizeDeviceCodeErrorText(value: string): string {
 function resolveNextDeviceCodePollDelayMs(intervalMs: number, deadlineMs: number): number {
   const remainingMs = Math.max(0, deadlineMs - Date.now());
   return Math.min(Math.max(intervalMs, OPENAI_CODEX_DEVICE_CODE_MIN_INTERVAL_MS), remainingMs);
+}
+
+function resolveDeviceCodePollRequestTimeoutMs(deadlineMs: number): number {
+  return Math.min(
+    OPENAI_CODEX_DEVICE_CODE_REQUEST_TIMEOUT_MS,
+    Math.max(0, deadlineMs - Date.now()),
+  );
+}
+
+function isDeviceCodeOperationTimeoutError(error: unknown): boolean {
+  // AbortSignal.timeout uses TimeoutError; undici may surface the same abort as
+  // AbortError. Caller cancel is filtered separately before this check.
+  return error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError");
+}
+
+function formatDeviceCodeFetchTimeoutError(operation: string, timeoutMs: number): Error {
+  return new Error(`OpenAI device code ${operation} timed out after ${timeoutMs}ms`);
+}
+
+function rethrowIfDeviceCodeCallerAborted(signal: AbortSignal | undefined, error: unknown): void {
+  // Caller cancel must win over operation-timeout mapping so poll does not
+  // retry wizard/Ctrl-C aborts as if the remote endpoint stalled.
+  if (!signal?.aborted) {
+    return;
+  }
+  throw signal.reason instanceof Error ? signal.reason : error;
+}
+
+function rethrowIfRequestSignalAborted(signal: AbortSignal, error: unknown): void {
+  // Prefer the composed signal reason so TimeoutError stays distinguishable from
+  // caller cancel after undici collapses body aborts into AbortError.
+  if (!signal.aborted) {
+    return;
+  }
+  throw signal.reason instanceof Error ? signal.reason : error;
+}
+
+// One operation deadline for headers + bounded body read. Compose with the
+// optional caller AbortSignal so Ctrl-C / wizard cancel still abort in-flight
+// fetch and post-header body stalls without replacing that contract.
+async function runOpenAICodexDeviceCodeRequest(params: {
+  fetchFn: typeof fetch;
+  url: string;
+  init: Omit<RequestInit, "signal">;
+  timeoutMs: number;
+  signal?: AbortSignal;
+}): Promise<DeviceCodeHttpResult> {
+  const signal = buildOAuthRequestSignal({
+    signal: params.signal,
+    timeoutMs: params.timeoutMs,
+  });
+  try {
+    const response = await params.fetchFn(params.url, {
+      ...params.init,
+      signal,
+    });
+    const bodyText = await readOpenAICodexDeviceBody(response);
+    return { response, bodyText };
+  } catch (error) {
+    rethrowIfRequestSignalAborted(signal, error);
+    throw error;
+  }
+}
+
+async function fetchOpenAICodexDeviceCode(params: {
+  fetchFn: typeof fetch;
+  url: string;
+  init: Omit<RequestInit, "signal">;
+  timeoutMs: number;
+  timeoutOperation: string;
+  signal?: AbortSignal;
+}): Promise<DeviceCodeHttpResult> {
+  try {
+    return await runOpenAICodexDeviceCodeRequest(params);
+  } catch (error) {
+    rethrowIfDeviceCodeCallerAborted(params.signal, error);
+    if (isDeviceCodeOperationTimeoutError(error)) {
+      throw formatDeviceCodeFetchTimeoutError(params.timeoutOperation, params.timeoutMs);
+    }
+    throw error;
+  }
 }
 
 function formatDeviceCodeError(params: {
@@ -137,16 +225,21 @@ async function requestOpenAICodexDeviceCode(
   signal?: AbortSignal,
 ): Promise<RequestedDeviceCode> {
   signal?.throwIfAborted();
-  const response = await fetchFn(`${OPENAI_AUTH_BASE_URL}/api/accounts/deviceauth/usercode`, {
-    method: "POST",
-    headers: resolveOpenAICodexDeviceCodeHeaders("application/json"),
-    body: JSON.stringify({
-      client_id: OPENAI_CODEX_CLIENT_ID,
-    }),
+  const { response, bodyText } = await fetchOpenAICodexDeviceCode({
+    fetchFn,
+    url: `${OPENAI_AUTH_BASE_URL}/api/accounts/deviceauth/usercode`,
+    init: {
+      method: "POST",
+      headers: resolveOpenAICodexDeviceCodeHeaders("application/json"),
+      body: JSON.stringify({
+        client_id: OPENAI_CODEX_CLIENT_ID,
+      }),
+    },
+    timeoutMs: OPENAI_CODEX_DEVICE_CODE_REQUEST_TIMEOUT_MS,
+    timeoutOperation: "user code request",
     ...(signal ? { signal } : {}),
   });
 
-  const bodyText = await readOpenAICodexDeviceBody(response);
   if (!response.ok) {
     if (response.status === 404) {
       throw new Error(
@@ -190,17 +283,37 @@ async function pollOpenAICodexDeviceCode(params: {
 
   while (Date.now() < deadline) {
     params.signal?.throwIfAborted();
-    const response = await params.fetchFn(`${OPENAI_AUTH_BASE_URL}/api/accounts/deviceauth/token`, {
-      method: "POST",
-      headers: resolveOpenAICodexDeviceCodeHeaders("application/json"),
-      body: JSON.stringify({
-        device_auth_id: params.deviceAuthId,
-        user_code: params.userCode,
-      }),
-      ...(params.signal ? { signal: params.signal } : {}),
-    });
+    const requestTimeoutMs = resolveDeviceCodePollRequestTimeoutMs(deadline);
+    if (requestTimeoutMs <= 0) {
+      break;
+    }
 
-    const bodyText = await readOpenAICodexDeviceBody(response);
+    let response: Response;
+    let bodyText: string;
+    try {
+      ({ response, bodyText } = await runOpenAICodexDeviceCodeRequest({
+        fetchFn: params.fetchFn,
+        url: `${OPENAI_AUTH_BASE_URL}/api/accounts/deviceauth/token`,
+        init: {
+          method: "POST",
+          headers: resolveOpenAICodexDeviceCodeHeaders("application/json"),
+          body: JSON.stringify({
+            device_auth_id: params.deviceAuthId,
+            user_code: params.userCode,
+          }),
+        },
+        timeoutMs: requestTimeoutMs,
+        ...(params.signal ? { signal: params.signal } : {}),
+      }));
+    } catch (error) {
+      rethrowIfDeviceCodeCallerAborted(params.signal, error);
+      // Retry header or post-header body stalls until the 15-minute deadline.
+      if (isDeviceCodeOperationTimeoutError(error)) {
+        continue;
+      }
+      throw error;
+    }
+
     if (response.ok) {
       const body = parseJsonObject(bodyText) as DeviceCodeTokenPayload | null;
       const authorizationCode = trimNonEmptyString(body?.authorization_code);
@@ -241,20 +354,25 @@ async function exchangeOpenAICodexDeviceCode(params: {
   signal?: AbortSignal;
 }): Promise<OpenAICodexDeviceCodeCredentials> {
   params.signal?.throwIfAborted();
-  const response = await params.fetchFn(`${OPENAI_AUTH_BASE_URL}/oauth/token`, {
-    method: "POST",
-    headers: resolveOpenAICodexDeviceCodeHeaders("application/x-www-form-urlencoded"),
-    body: new URLSearchParams({
-      grant_type: "authorization_code",
-      code: params.authorizationCode,
-      redirect_uri: OPENAI_CODEX_DEVICE_CALLBACK_URL,
-      client_id: OPENAI_CODEX_CLIENT_ID,
-      code_verifier: params.codeVerifier,
-    }),
+  const { response, bodyText } = await fetchOpenAICodexDeviceCode({
+    fetchFn: params.fetchFn,
+    url: `${OPENAI_AUTH_BASE_URL}/oauth/token`,
+    init: {
+      method: "POST",
+      headers: resolveOpenAICodexDeviceCodeHeaders("application/x-www-form-urlencoded"),
+      body: new URLSearchParams({
+        grant_type: "authorization_code",
+        code: params.authorizationCode,
+        redirect_uri: OPENAI_CODEX_DEVICE_CALLBACK_URL,
+        client_id: OPENAI_CODEX_CLIENT_ID,
+        code_verifier: params.codeVerifier,
+      }),
+    },
+    timeoutMs: OPENAI_CODEX_DEVICE_CODE_REQUEST_TIMEOUT_MS,
+    timeoutOperation: "token exchange",
     ...(params.signal ? { signal: params.signal } : {}),
   });
 
-  const bodyText = await readOpenAICodexDeviceBody(response);
   if (!response.ok) {
     throw new Error(
       formatDeviceCodeError({

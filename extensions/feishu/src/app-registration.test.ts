@@ -7,7 +7,6 @@ import { withFetchPreconnect } from "openclaw/plugin-sdk/test-env";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   beginAppRegistration,
-  FEISHU_APP_REGISTRATION_TIMEOUT_MS,
   type FeishuAppRegistrationFetch,
   pollAppRegistration,
   printQrCode,
@@ -256,7 +255,6 @@ describe("Feishu app registration", () => {
   });
 
   it("times out registration POSTs when accounts never return headers", async () => {
-    expect(FEISHU_APP_REGISTRATION_TIMEOUT_MS).toBe(10_000);
     await withRegistrationServer(
       // Accept TCP but never write headers — idle body timers never start.
       (_req, _res) => {},
@@ -264,7 +262,7 @@ describe("Feishu app registration", () => {
         const started = Date.now();
         const outcome = await beginAppRegistration("feishu", {
           ...options,
-          // Stand-in for FEISHU_APP_REGISTRATION_TIMEOUT_MS; keep the suite fast.
+          // Keep the real guarded-fetch path while shortening its production deadline.
           timeoutMs: 80,
         }).then(
           (value) => ({ ok: true as const, value }),
@@ -283,7 +281,7 @@ describe("Feishu app registration", () => {
         console.log(
           `[feishu fetchFeishuJson hang proof] timed_out=${!outcome.ok} name=${
             outcome.ok ? "n/a" : (outcome.error as Error).name
-          } elapsed_ms=${elapsedMs} production_timeout_ms=${FEISHU_APP_REGISTRATION_TIMEOUT_MS}`,
+          } elapsed_ms=${elapsedMs}`,
         );
       },
     );

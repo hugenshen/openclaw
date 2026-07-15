@@ -22,8 +22,9 @@ const LARK_ACCOUNTS_URL = "https://accounts.larksuite.com";
 
 const REGISTRATION_PATH = "/oauth/v1/app/registration";
 
-/** Wizard/onboarding hang floor for registration guarded fetches (not FEISHU_HTTP_TIMEOUT_MS). */
-export const FEISHU_APP_REGISTRATION_TIMEOUT_MS = 10_000;
+// QR onboarding should fall back promptly when an accounts endpoint stalls;
+// regular Feishu API requests use the longer FEISHU_HTTP_TIMEOUT_MS budget.
+const APP_REGISTRATION_REQUEST_TIMEOUT_MS = 10_000;
 const DEFAULT_REGISTRATION_POLL_INTERVAL_SECONDS = 5;
 const DEFAULT_REGISTRATION_EXPIRE_SECONDS = 600;
 
@@ -58,7 +59,7 @@ type FeishuAppRegistrationFetchOptions = {
   fetchImpl?: FeishuAppRegistrationFetch;
   /** Override hostname lookup for hermetic SSRF-guard tests. */
   lookupFn?: LookupFn;
-  /** Override the guarded-fetch hang floor (defaults to FEISHU_APP_REGISTRATION_TIMEOUT_MS). */
+  /** Override the registration HTTP deadline for tests. */
   timeoutMs?: number;
 };
 
@@ -124,10 +125,7 @@ async function fetchFeishuJson<T>(params: {
   lookupFn?: LookupFn;
   timeoutMs?: number;
 }): Promise<T> {
-  // Mirror streaming-card: pass timeoutMs into fetchWithSsrFGuard so undici
-  // dispatcher + guarded abort both fire. Registration keeps the tighter
-  // FEISHU_APP_REGISTRATION_TIMEOUT_MS wizard budget (not FEISHU_HTTP_TIMEOUT_MS).
-  const timeoutMs = params.timeoutMs ?? FEISHU_APP_REGISTRATION_TIMEOUT_MS;
+  const timeoutMs = params.timeoutMs ?? APP_REGISTRATION_REQUEST_TIMEOUT_MS;
   const { response, release } = await fetchWithSsrFGuard({
     url: params.url,
     init: params.init,
@@ -236,9 +234,7 @@ export async function pollAppRegistration(params: {
   let domainSwitched = false;
 
   const expireInMs =
-    finiteSecondsToTimerSafeMilliseconds(expireIn) ??
-    finiteSecondsToTimerSafeMilliseconds(DEFAULT_REGISTRATION_EXPIRE_SECONDS) ??
-    FEISHU_APP_REGISTRATION_TIMEOUT_MS;
+    finiteSecondsToTimerSafeMilliseconds(expireIn) ?? DEFAULT_REGISTRATION_EXPIRE_SECONDS * 1_000;
   const deadline = Date.now() + expireInMs;
 
   while (Date.now() < deadline) {
@@ -401,7 +397,6 @@ export async function getAppOwnerOpenId(params: {
 function sleepRegistrationPollInterval(intervalSeconds: number): Promise<void> {
   const intervalMs =
     finiteSecondsToTimerSafeMilliseconds(intervalSeconds) ??
-    finiteSecondsToTimerSafeMilliseconds(DEFAULT_REGISTRATION_POLL_INTERVAL_SECONDS) ??
-    FEISHU_APP_REGISTRATION_TIMEOUT_MS;
+    DEFAULT_REGISTRATION_POLL_INTERVAL_SECONDS * 1_000;
   return sleep(intervalMs);
 }

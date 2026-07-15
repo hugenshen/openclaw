@@ -16,6 +16,9 @@ import { icons } from "./icons.ts";
 
 type WebAwesomeSelectEvent = Event & { detail: { item: Element } };
 
+/** Bound local avatar fetches so a stalled Control UI media route cannot pin pending state forever. */
+const AGENT_SELECT_AVATAR_FETCH_TIMEOUT_MS = 30_000;
+
 export class AgentSelect extends OpenClawLightDomElement {
   @property({ attribute: false }) agents: GatewayAgentRow[] = [];
   @property({ attribute: false }) selectedId: string | null = null;
@@ -56,22 +59,46 @@ export class AgentSelect extends OpenClawLightDomElement {
       return;
     }
     this.avatarRoutesPending.add(url);
-    void fetch(url, { headers: { Authorization: `Bearer ${authToken}` } })
-      .then(async (res) => (res.ok ? URL.createObjectURL(await res.blob()) : ""))
-      .catch(() => "")
-      .then((blobUrl) => {
+    void this.fetchLocalAvatarBlobUrl(url, authToken).then((blobUrl) => {
+      if (!this.isConnected || this.authToken !== authToken) {
         this.avatarRoutesPending.delete(url);
-        if (!this.isConnected || this.authToken !== authToken) {
-          if (blobUrl) {
-            URL.revokeObjectURL(blobUrl);
-          }
-          return;
-        }
-        this.avatarBlobUrlByRoute.set(url, blobUrl);
         if (blobUrl) {
-          this.requestUpdate();
+          URL.revokeObjectURL(blobUrl);
         }
+        return;
+      }
+      // Cache the result (including empty miss) before clearing pending so a
+      // concurrent re-render cannot start a second unbounded fetch for the same URL.
+      this.avatarBlobUrlByRoute.set(url, blobUrl);
+      this.avatarRoutesPending.delete(url);
+      if (blobUrl) {
+        this.requestUpdate();
+      }
+    });
+  }
+
+  private async fetchLocalAvatarBlobUrl(url: string, authToken: string): Promise<string> {
+    const controller = new AbortController();
+    const timeout = setTimeout(
+      () => controller.abort(new DOMException("agent avatar fetch timed out", "TimeoutError")),
+      AGENT_SELECT_AVATAR_FETCH_TIMEOUT_MS,
+    );
+    try {
+      const res = await fetch(url, {
+        headers: { Authorization: `Bearer ${authToken}` },
+        signal: controller.signal,
       });
+      if (!res.ok) {
+        return "";
+      }
+      return URL.createObjectURL(await res.blob());
+    } catch {
+      // Timeouts and transport failures share the empty-string miss path so the
+      // picker keeps the text fallback instead of leaving avatarRoutesPending set.
+      return "";
+    } finally {
+      clearTimeout(timeout);
+    }
   }
 
   private renderAvatar(agent: GatewayAgentRow) {

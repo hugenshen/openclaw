@@ -114,6 +114,7 @@ it("fetches local avatars with the bearer credential when token auth is active",
     expect(element.querySelector(".agent-select__avatar--text")?.textContent?.trim()).toBe("A");
     expect(fetchMock).toHaveBeenCalledWith("/avatar/alpha", {
       headers: { Authorization: "Bearer tok" },
+      signal: expect.any(AbortSignal),
     });
 
     await vi.waitFor(() => {
@@ -160,6 +161,7 @@ it("refetches a failed local avatar after the auth credential rotates", async ()
     await vi.waitFor(() => {
       expect(fetchMock).toHaveBeenLastCalledWith("/avatar/alpha", {
         headers: { Authorization: "Bearer tok2" },
+        signal: expect.any(AbortSignal),
       });
       expect(
         element.querySelector<HTMLImageElement>("img.agent-select__avatar")?.getAttribute("src"),
@@ -167,6 +169,53 @@ it("refetches a failed local avatar after the auth credential rotates", async ()
     });
   } finally {
     element.remove();
+    vi.unstubAllGlobals();
+  }
+});
+
+it("aborts a stalled local avatar fetch after the request deadline", async () => {
+  vi.useFakeTimers();
+  const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+    const signal = init?.signal;
+    if (!signal) {
+      throw new Error("missing agent avatar fetch signal");
+    }
+    return await new Promise<Response>((_resolve, reject) => {
+      signal.addEventListener(
+        "abort",
+        () => {
+          reject(signal.reason as Error);
+        },
+        { once: true },
+      );
+    });
+  });
+  vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
+
+  const element = await createAgentSelect({
+    authToken: "tok",
+    identityById: { alpha: createIdentity("alpha", { avatar: "/avatar/alpha" }) },
+  });
+
+  try {
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [, fetchInit] = fetchMock.mock.calls[0] ?? [];
+    expect(fetchInit?.signal?.aborted).toBe(false);
+    expect(element.querySelector(".agent-select__avatar--text")?.textContent?.trim()).toBe("A");
+
+    await vi.advanceTimersByTimeAsync(29_999);
+    expect(fetchInit?.signal?.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(fetchInit?.signal?.aborted).toBe(true);
+
+    await vi.waitFor(() => {
+      expect(element.querySelector("img.agent-select__avatar")).toBeNull();
+      expect(element.querySelector(".agent-select__avatar--text")?.textContent?.trim()).toBe("A");
+    });
+    expect(vi.getTimerCount()).toBe(0);
+  } finally {
+    element.remove();
+    vi.useRealTimers();
     vi.unstubAllGlobals();
   }
 });

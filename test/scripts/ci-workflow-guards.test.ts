@@ -1092,4 +1092,14 @@ describe("ci workflow guards", () => {
     expect(workflow).toContain("Network runtime boundary-sensitive added lines");
     expect(workflow).toContain("if: ${{ github.event_name != 'pull_request' }}");
   });
+
+  it("bounds gateway healthz curl probes in the performance benchmark workflow", () => {
+    const workflow = readFileSync(".github/workflows/openclaw-performance.yml", "utf8");
+    const healthzCurls = workflow.match(/curl[^\n]*healthz[^\n]*/g) ?? [];
+
+    expect(healthzCurls.length).toBeGreaterThanOrEqual(2);
+    for (const line of healthzCurls) {
+      expect(line).toContain("--max-time");
+    }
+  });
 });

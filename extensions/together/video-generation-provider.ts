@@ -163,6 +163,11 @@ async function downloadTogetherVideo(params: {
   });
   const mimeType = normalizeOptionalString(response.headers.get("content-type")) ?? "video/mp4";
   const buffer = await readResponseWithLimit(response, params.maxBytes, {
+    chunkTimeoutMs: params.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+    onIdleTimeout: ({ chunkTimeoutMs }) =>
+      new Error(
+        `Together generated video download stalled: no data received for ${chunkTimeoutMs}ms`,
+      ),
     onOverflow: ({ maxBytes }) =>
       new Error(`Together generated video download exceeds ${maxBytes} bytes`),
   });

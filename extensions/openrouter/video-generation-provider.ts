@@ -399,10 +399,15 @@ async function downloadOpenRouterVideo(params: {
     let buffer: Buffer;
     try {
       buffer = await readResponseWithLimit(response, params.maxBytes, {
+        chunkTimeoutMs: params.timeoutMs,
         onOverflow: ({ maxBytes }) => {
           exceededMaxBytes = true;
           return new Error(`OpenRouter generated video download exceeds ${maxBytes} bytes`);
         },
+        onIdleTimeout: ({ chunkTimeoutMs }) =>
+          new Error(
+            `OpenRouter generated video download stalled: no data received for ${chunkTimeoutMs}ms`,
+          ),
       });
     } catch (error) {
       if (exceededMaxBytes && params.deliveryUrl) {

@@ -335,8 +335,13 @@ async function downloadRunwayVideos(params: {
     });
     const mimeType = normalizeOptionalString(response.headers.get("content-type")) ?? "video/mp4";
     const buffer = await readResponseWithLimit(response, params.maxBytes, {
+      chunkTimeoutMs: params.timeoutMs ?? DEFAULT_TIMEOUT_MS,
       onOverflow: ({ maxBytes }) =>
         new Error(`Runway generated video download exceeds ${maxBytes} bytes`),
+      onIdleTimeout: ({ chunkTimeoutMs }) =>
+        new Error(
+          `Runway generated video download stalled: no data received for ${chunkTimeoutMs}ms`,
+        ),
     });
     videos.push({
       buffer,

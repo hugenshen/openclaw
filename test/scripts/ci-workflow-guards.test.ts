@@ -2119,6 +2119,17 @@ describe("ci workflow guards", () => {
     );
   });
 
+  it("bounds actionlint release download curls with connection and transfer deadlines", () => {
+    const workflow = readWorkflowSanityWorkflow();
+    const actionlintStep = workflow.jobs.actionlint.steps.find(
+      (step) => step.name === "Install actionlint",
+    );
+
+    expect(actionlintStep?.run).toContain(
+      "curl --retry 5 --retry-delay 2 --retry-all-errors --connect-timeout 10 --max-time 60 -sSfL",
+    );
+  });
+
   it("fails Windows Testbox setup when Blacksmith phone-home is not accepted", () => {
     const workflow = readFileSync(".github/workflows/windows-blacksmith-testbox.yml", "utf8");
 

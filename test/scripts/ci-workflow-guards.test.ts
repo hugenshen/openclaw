@@ -1527,6 +1527,9 @@ describe("ci workflow guards", () => {
     );
     expect(cacheStep.with?.key).toContain(`platform-${appCompileSdk}.0-`);
     expect(installStep.run).toContain(`"${packageId}"`);
+    expect(installStep.run).toContain(
+      'yes | sdkmanager --sdk_root="${ANDROID_SDK_ROOT}" --licenses >/dev/null || [[ "${PIPESTATUS[1]}" -eq 0 ]]',
+    );
   });
 
   it("loads Android CI setup from the workflow revision for frozen targets", () => {
@@ -1983,17 +1986,29 @@ describe("ci workflow guards", () => {
     }
   });
 
-  it("bounds the workflow sanity ShellCheck download", () => {
+  it("bounds the workflow sanity tool downloads", () => {
     const workflow = readWorkflowSanityWorkflow();
-    const installStep = expectDefined(
+    const shellcheckStep = expectDefined(
       workflow.jobs.actionlint.steps.find(
         (step: WorkflowStep) => step.name === "Install ShellCheck",
       ),
       "ShellCheck install step",
     );
+    const actionlintStep = expectDefined(
+      workflow.jobs.actionlint.steps.find(
+        (step: WorkflowStep) => step.name === "Install actionlint",
+      ),
+      "actionlint install step",
+    );
 
-    expect(installStep.run).toContain("curl --connect-timeout 10 --max-time 120");
-    expect(installStep.run).toContain("--retry 5 --retry-delay 2 --retry-all-errors");
+    expect(shellcheckStep.run).toContain("curl --connect-timeout 10 --max-time 120");
+    expect(shellcheckStep.run).toContain("--retry 5 --retry-delay 2 --retry-all-errors");
+    expect(actionlintStep.run).toContain("--connect-timeout 10");
+    expect(actionlintStep.run).toContain("--max-time 120");
+    expect(actionlintStep.run).toContain("--retry 5");
+    expect(actionlintStep.run).toContain("--retry-delay 2");
+    expect(actionlintStep.run).toContain("--retry-all-errors");
+    expect(actionlintStep.run.match(/curl "\$\{curl_args\[@\]\}"/gu)).toHaveLength(2);
   });
 
   it("runs generated baseline drift checks in workflow sanity", () => {
@@ -3865,5 +3880,25 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
     expect(rawSocketQuery).not.toContain(
       'call.getFile().getRelativePath() = "extensions/codex/src/app-server/transport-websocket.ts"',
     );
+  });
+
+  it("bounds the full opengrep install including installer child downloads", () => {
+    const workflowPaths = [OPENGREP_PR_DIFF_WORKFLOW, OPENGREP_FULL_WORKFLOW];
+
+    for (const workflowPath of workflowPaths) {
+      const workflow = parse(readFileSync(workflowPath, "utf8")) as {
+        jobs: { scan: { steps: WorkflowStep[] } };
+      };
+      const installStep = workflow.jobs.scan.steps.find((step) => step.name === "Install opengrep");
+      const run = installStep?.run ?? "";
+
+      // Download install.sh to a file first, then execute it under GNU timeout so
+      // installer child curls for binary/cert/signature cannot hang the scan job.
+      expect(run).toContain("timeout --signal=TERM --kill-after=15s 600s");
+      expect(run).toContain("curl -fsSL --connect-timeout 10 --max-time 30");
+      expect(run).toContain("opengrep/opengrep/${OPENGREP_INSTALL_SHA}/install.sh");
+      expect(run).toContain('bash "$install_sh" -v "$OPENGREP_VERSION"');
+      expect(run).not.toContain("| bash -s");
+    }
   });
 });

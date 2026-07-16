@@ -1092,4 +1092,20 @@ describe("ci workflow guards", () => {
     expect(workflow).toContain("Network runtime boundary-sensitive added lines");
     expect(workflow).toContain("if: ${{ github.event_name != 'pull_request' }}");
   });
+
+  it("bounds Android SDK commandlinetools download curls with connection and transfer deadlines", () => {
+    const workflowPaths = [".github/workflows/android-release.yml", ".github/workflows/ci.yml"];
+
+    for (const workflowPath of workflowPaths) {
+      const source = readFileSync(workflowPath, "utf8");
+      const sdkCurls =
+        source.match(/curl[^\n]*commandlinetools[^\n]*|curl[^\n]*android\/repository[^\n]*/g) ?? [];
+
+      expect(sdkCurls.length, workflowPath).toBeGreaterThanOrEqual(1);
+      for (const line of sdkCurls) {
+        expect(line, workflowPath).toContain("--connect-timeout");
+        expect(line, workflowPath).toContain("--max-time");
+      }
+    }
+  });
 });

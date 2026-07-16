@@ -6,6 +6,7 @@ export {
   buildEmbeddingBatchGroupOptions,
   buildRemoteBaseUrlPolicy,
   classifyMemoryMultimodalPath,
+  createHostedRemoteEmbeddingProvider,
   createLocalEmbeddingProvider,
   createRemoteEmbeddingProvider,
   debugEmbeddingsLog,
@@ -16,6 +17,7 @@ export {
   estimateStructuredEmbeddingInputBytes,
   estimateUtf8Bytes,
   extractBatchErrorMessage,
+  fetchHostedRemoteEmbeddingVectors,
   fetchRemoteEmbeddingVectors,
   formatBatchErrorDetail,
   formatUnavailableBatchError,
@@ -38,6 +40,7 @@ export {
   throwIfBatchCompletionError,
   throwIfBatchTerminalFailure,
   uploadBatchJsonlFile,
+  withHostedRemoteHttpResponse,
   withRemoteHttpResponse,
 } from "../../packages/memory-host-sdk/src/engine-embeddings.js";
 

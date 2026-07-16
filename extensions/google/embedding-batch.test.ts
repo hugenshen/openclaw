@@ -11,7 +11,7 @@ vi.mock("openclaw/plugin-sdk/memory-core-host-engine-embeddings", async (importO
     await importOriginal<typeof import("openclaw/plugin-sdk/memory-core-host-engine-embeddings")>();
   return {
     ...actual,
-    withRemoteHttpResponse: async <T>(params: {
+    withHostedRemoteHttpResponse: async <T>(params: {
       url: string;
       ssrfPolicy?: unknown;
       init?: RequestInit;

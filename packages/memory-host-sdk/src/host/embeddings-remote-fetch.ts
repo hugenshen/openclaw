@@ -1,5 +1,6 @@
 // Memory Host SDK module implements embeddings remote fetch behavior.
 import { postJson } from "./post-json.js";
+import { MEMORY_REMOTE_HTTP_TIMEOUT_HOSTED_MS } from "./remote-http.js";
 import type { SsrFPolicy } from "./ssrf-policy.js";
 
 // Fetches and validates OpenAI-compatible embedding responses.
@@ -42,6 +43,8 @@ export async function fetchRemoteEmbeddingVectors(params: {
   ssrfPolicy?: SsrFPolicy;
   fetchImpl?: typeof fetch;
   signal?: AbortSignal;
+  /** Override the shared remote-http hang floor. */
+  timeoutMs?: number;
   body: unknown;
   errorPrefix: string;
 }): Promise<number[][]> {
@@ -51,6 +54,7 @@ export async function fetchRemoteEmbeddingVectors(params: {
     ssrfPolicy: params.ssrfPolicy,
     fetchImpl: params.fetchImpl,
     signal: params.signal,
+    timeoutMs: params.timeoutMs,
     body: params.body,
     errorPrefix: params.errorPrefix,
     parse: (payload) => {
@@ -70,5 +74,17 @@ export async function fetchRemoteEmbeddingVectors(params: {
         return readEmbeddingVector(record.embedding, params.errorPrefix);
       });
     },
+  });
+}
+
+/** Hosted/cloud OpenAI-compatible embedding fetch with the 120s hang floor. */
+export async function fetchHostedRemoteEmbeddingVectors(
+  params: Omit<Parameters<typeof fetchRemoteEmbeddingVectors>[0], "timeoutMs"> & {
+    timeoutMs?: number;
+  },
+): Promise<number[][]> {
+  return await fetchRemoteEmbeddingVectors({
+    ...params,
+    timeoutMs: params.timeoutMs ?? MEMORY_REMOTE_HTTP_TIMEOUT_HOSTED_MS,
   });
 }

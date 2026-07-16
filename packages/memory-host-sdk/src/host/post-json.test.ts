@@ -73,6 +73,22 @@ describe("postJson", () => {
     expect(result).toEqual({ data: [{ embedding: [1, 2] }] });
   });
 
+  it("forwards timeoutMs overrides to the remote HTTP request", async () => {
+    remoteHttpMock.mockImplementationOnce(async (params) => {
+      expect(params.timeoutMs).toBe(1_250);
+      return await params.onResponse(jsonResponse({ ok: true }));
+    });
+
+    await postJson({
+      url: "https://memory.example/v1/post",
+      headers: { Authorization: "Bearer test" },
+      body: { input: ["x"] },
+      errorPrefix: "post failed",
+      timeoutMs: 1_250,
+      parse: (payload) => payload,
+    });
+  });
+
   it("forwards abort signals to the remote HTTP request", async () => {
     const controller = new AbortController();
     remoteHttpMock.mockImplementationOnce(async (params) => {

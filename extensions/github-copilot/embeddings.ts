@@ -2,7 +2,7 @@
 import {
   buildRemoteBaseUrlPolicy,
   sanitizeAndNormalizeEmbedding,
-  withRemoteHttpResponse,
+  withHostedRemoteHttpResponse,
   type MemoryEmbeddingProvider,
   type MemoryEmbeddingProviderAdapter,
 } from "openclaw/plugin-sdk/memory-core-host-engine-embeddings";
@@ -234,7 +234,7 @@ async function createGitHubCopilotEmbeddingProvider(
 
     const session = await resolveGitHubCopilotEmbeddingSession(client);
     const url = `${session.baseUrl.replace(/\/$/, "")}/embeddings`;
-    return await withRemoteHttpResponse({
+    return await withHostedRemoteHttpResponse({
       url,
       fetchImpl: client.fetchImpl,
       ssrfPolicy: buildRemoteBaseUrlPolicy(session.baseUrl),

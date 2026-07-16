@@ -15,6 +15,8 @@ export async function postJson<T>(params: {
   ssrfPolicy?: SsrFPolicy;
   fetchImpl?: typeof fetch;
   signal?: AbortSignal;
+  /** Optional override for the shared remote-http hang floor. */
+  timeoutMs?: number;
   body: unknown;
   errorPrefix: string;
   attachStatus?: boolean;
@@ -26,6 +28,7 @@ export async function postJson<T>(params: {
     ssrfPolicy: params.ssrfPolicy,
     fetchImpl: params.fetchImpl,
     signal: params.signal,
+    timeoutMs: params.timeoutMs,
     init: {
       method: "POST",
       headers: params.headers,

@@ -1,6 +1,6 @@
 // Mistral provider module implements model/runtime integration.
 import {
-  createRemoteEmbeddingProvider,
+  createHostedRemoteEmbeddingProvider,
   normalizeEmbeddingModelWithPrefixes,
   resolveRemoteEmbeddingClient,
   type MemoryEmbeddingProvider,
@@ -32,7 +32,7 @@ export async function createMistralEmbeddingProvider(
   const client = await resolveMistralEmbeddingClient(options);
 
   return {
-    provider: createRemoteEmbeddingProvider({
+    provider: createHostedRemoteEmbeddingProvider({
       id: "mistral",
       client,
       errorPrefix: "mistral embeddings failed",

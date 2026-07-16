@@ -20,7 +20,7 @@ import {
   type BatchCompletionResult,
   type ProviderBatchOutputLine,
   uploadBatchJsonlFile,
-  withRemoteHttpResponse,
+  withHostedRemoteHttpResponse,
 } from "openclaw/plugin-sdk/memory-core-host-engine-embeddings";
 import {
   assertOkOrThrowProviderError,
@@ -56,7 +56,7 @@ type VoyageBatchDeps = {
   sleep: (ms: number) => Promise<void>;
   postJsonWithRetry: typeof postJsonWithRetry<VoyageBatchStatus>;
   uploadBatchJsonlFile: typeof uploadBatchJsonlFile;
-  withRemoteHttpResponse: typeof withRemoteHttpResponse;
+  withHostedRemoteHttpResponse: typeof withHostedRemoteHttpResponse;
 };
 
 function resolveVoyageBatchDeps(overrides: Partial<VoyageBatchDeps> | undefined): VoyageBatchDeps {
@@ -70,7 +70,8 @@ function resolveVoyageBatchDeps(overrides: Partial<VoyageBatchDeps> | undefined)
         })),
     postJsonWithRetry: overrides?.postJsonWithRetry ?? postJsonWithRetry,
     uploadBatchJsonlFile: overrides?.uploadBatchJsonlFile ?? uploadBatchJsonlFile,
-    withRemoteHttpResponse: overrides?.withRemoteHttpResponse ?? withRemoteHttpResponse,
+    withHostedRemoteHttpResponse:
+      overrides?.withHostedRemoteHttpResponse ?? withHostedRemoteHttpResponse,
   };
 }
 
@@ -132,7 +133,7 @@ async function fetchVoyageBatchStatus(params: {
   maxResponseBytes?: number;
 }): Promise<VoyageBatchStatus> {
   const maxBytes = params.maxResponseBytes ?? VOYAGE_BATCH_RESPONSE_MAX_BYTES;
-  return await params.deps.withRemoteHttpResponse(
+  return await params.deps.withHostedRemoteHttpResponse(
     buildVoyageBatchRequest({
       client: params.client,
       path: `batches/${params.batchId}`,
@@ -154,7 +155,7 @@ async function readVoyageBatchError(params: {
 }): Promise<string | undefined> {
   const maxBytes = params.maxResponseBytes ?? VOYAGE_BATCH_RESPONSE_MAX_BYTES;
   try {
-    return await params.deps.withRemoteHttpResponse(
+    return await params.deps.withHostedRemoteHttpResponse(
       buildVoyageBatchRequest({
         client: params.client,
         path: `files/${params.errorFileId}/content`,
@@ -302,7 +303,7 @@ export async function runVoyageEmbeddingBatches(
       const errors: string[] = [];
       const remaining = new Set(group.map((request) => request.custom_id));
 
-      await deps.withRemoteHttpResponse({
+      await deps.withHostedRemoteHttpResponse({
         url: `${baseUrl}/files/${completed.outputFileId}/content`,
         ssrfPolicy: params.client.ssrfPolicy,
         init: {

@@ -1,6 +1,6 @@
 // Voyage provider module implements model/runtime integration.
 import {
-  fetchRemoteEmbeddingVectors,
+  fetchHostedRemoteEmbeddingVectors,
   normalizeEmbeddingModelWithPrefixes,
   resolveRemoteEmbeddingBearerClient,
   type MemoryEmbeddingProvider,
@@ -53,7 +53,7 @@ export async function createVoyageEmbeddingProvider(
       body.input_type = input_type;
     }
 
-    return await fetchRemoteEmbeddingVectors({
+    return await fetchHostedRemoteEmbeddingVectors({
       url,
       headers: client.headers,
       ssrfPolicy: client.ssrfPolicy,

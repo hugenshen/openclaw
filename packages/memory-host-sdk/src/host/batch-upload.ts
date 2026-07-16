@@ -5,7 +5,7 @@ import {
   type BatchHttpClientConfig,
 } from "./batch-utils.js";
 import { hashText } from "./hash.js";
-import { withRemoteHttpResponse } from "./remote-http.js";
+import { withHostedRemoteHttpResponse } from "./remote-http.js";
 import {
   readMemoryHostResponseTextSnippet,
   readResponseJsonWithLimit,
@@ -31,7 +31,7 @@ export async function uploadBatchJsonlFile(params: {
     `memory-embeddings.${hashText(String(Date.now()))}.jsonl`,
   );
 
-  const filePayload = await withRemoteHttpResponse({
+  const filePayload = await withHostedRemoteHttpResponse({
     url: `${baseUrl}/files`,
     ssrfPolicy: params.client.ssrfPolicy,
     fetchImpl: params.client.fetchImpl,

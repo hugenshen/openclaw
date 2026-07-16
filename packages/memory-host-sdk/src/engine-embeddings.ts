@@ -63,17 +63,25 @@ export {
   type RemoteEmbeddingProviderId,
 } from "./host/embeddings-remote-client.js";
 export {
+  createHostedRemoteEmbeddingProvider,
   createRemoteEmbeddingProvider,
   resolveRemoteEmbeddingClient,
   type RemoteEmbeddingClient,
 } from "./host/embeddings-remote-provider.js";
-export { fetchRemoteEmbeddingVectors } from "./host/embeddings-remote-fetch.js";
+export {
+  fetchHostedRemoteEmbeddingVectors,
+  fetchRemoteEmbeddingVectors,
+} from "./host/embeddings-remote-fetch.js";
 export {
   estimateStructuredEmbeddingInputBytes,
   estimateUtf8Bytes,
 } from "./host/embedding-input-limits.js";
 export { hasNonTextEmbeddingParts, type EmbeddingInput } from "./host/embedding-inputs.js";
-export { buildRemoteBaseUrlPolicy, withRemoteHttpResponse } from "./host/remote-http.js";
+export {
+  buildRemoteBaseUrlPolicy,
+  withHostedRemoteHttpResponse,
+  withRemoteHttpResponse,
+} from "./host/remote-http.js";
 export {
   buildCaseInsensitiveExtensionGlob,
   classifyMemoryMultimodalPath,

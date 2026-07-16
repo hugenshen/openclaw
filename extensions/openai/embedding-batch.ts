@@ -20,7 +20,7 @@ import {
   type BatchCompletionResult,
   type ProviderBatchOutputLine,
   uploadBatchJsonlFile,
-  withRemoteHttpResponse,
+  withHostedRemoteHttpResponse,
 } from "openclaw/plugin-sdk/memory-core-host-engine-embeddings";
 import {
   assertOkOrThrowProviderError,
@@ -137,7 +137,7 @@ async function fetchOpenAiBatchResource<T>(params: {
   parse: (res: Response) => Promise<T>;
 }): Promise<T> {
   const baseUrl = normalizeBatchBaseUrl(params.openAi);
-  return await withRemoteHttpResponse({
+  return await withHostedRemoteHttpResponse({
     url: `${baseUrl}${params.path}`,
     ssrfPolicy: params.openAi.ssrfPolicy,
     fetchImpl: params.openAi.fetchImpl,

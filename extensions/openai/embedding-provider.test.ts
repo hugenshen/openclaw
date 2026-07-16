@@ -9,12 +9,12 @@ const DEFAULT_MOCK_CLIENT = {
 };
 
 const mocks = vi.hoisted(() => ({
-  fetchRemoteEmbeddingVectors: vi.fn(async () => [[1, 0]]),
+  fetchHostedRemoteEmbeddingVectors: vi.fn(async () => [[1, 0]]),
   resolveRemoteEmbeddingClient: vi.fn(async () => ({ ...DEFAULT_MOCK_CLIENT })),
 }));
 
 vi.mock("openclaw/plugin-sdk/memory-core-host-engine-embeddings", () => ({
-  fetchRemoteEmbeddingVectors: mocks.fetchRemoteEmbeddingVectors,
+  fetchHostedRemoteEmbeddingVectors: mocks.fetchHostedRemoteEmbeddingVectors,
   resolveRemoteEmbeddingClient: mocks.resolveRemoteEmbeddingClient,
 }));
 
@@ -33,7 +33,7 @@ function createOptions(
 }
 
 function expectFetchRemoteEmbeddingVectorsBody(body: Record<string, unknown>) {
-  expect(mocks.fetchRemoteEmbeddingVectors).toHaveBeenCalledWith({
+  expect(mocks.fetchHostedRemoteEmbeddingVectors).toHaveBeenCalledWith({
     url: "https://embeddings.example/v1/embeddings",
     headers: { Authorization: "Bearer test" },
     ssrfPolicy: undefined,
@@ -46,7 +46,7 @@ function expectFetchRemoteEmbeddingVectorsBody(body: Record<string, unknown>) {
 
 describe("OpenAI embedding provider", () => {
   beforeEach(() => {
-    mocks.fetchRemoteEmbeddingVectors.mockClear();
+    mocks.fetchHostedRemoteEmbeddingVectors.mockClear();
     mocks.resolveRemoteEmbeddingClient.mockClear();
   });
 
@@ -197,7 +197,7 @@ describe("OpenAI embedding provider", () => {
 
     await provider.embedQuery("test");
 
-    expect(mocks.fetchRemoteEmbeddingVectors).toHaveBeenCalledWith({
+    expect(mocks.fetchHostedRemoteEmbeddingVectors).toHaveBeenCalledWith({
       url: "https://router.requesty.ai/v1/embeddings",
       headers: { Authorization: "Bearer test" },
       ssrfPolicy: undefined,

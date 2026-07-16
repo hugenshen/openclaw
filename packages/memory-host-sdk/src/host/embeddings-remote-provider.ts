@@ -5,6 +5,7 @@ import {
 } from "./embeddings-remote-client.js";
 import { fetchRemoteEmbeddingVectors } from "./embeddings-remote-fetch.js";
 import type { EmbeddingProvider, EmbeddingProviderOptions } from "./embeddings.types.js";
+import { MEMORY_REMOTE_HTTP_TIMEOUT_HOSTED_MS } from "./remote-http.js";
 import type { SsrFPolicy } from "./ssrf-policy.js";
 
 // Remote embedding provider factory for OpenAI-compatible embeddings APIs.
@@ -24,6 +25,8 @@ export function createRemoteEmbeddingProvider(params: {
   client: RemoteEmbeddingClient;
   errorPrefix: string;
   maxInputTokens?: number;
+  /** Override the shared remote-http hang floor. */
+  timeoutMs?: number;
 }): EmbeddingProvider {
   const { client } = params;
   const url = `${client.baseUrl.replace(/\/$/, "")}/embeddings`;
@@ -38,6 +41,7 @@ export function createRemoteEmbeddingProvider(params: {
       ssrfPolicy: client.ssrfPolicy,
       fetchImpl: client.fetchImpl,
       signal,
+      timeoutMs: params.timeoutMs,
       body: { model: client.model, input },
       errorPrefix: params.errorPrefix,
     });
@@ -53,6 +57,18 @@ export function createRemoteEmbeddingProvider(params: {
     },
     embedBatch: async (texts, options) => await embed(texts, options?.signal),
   };
+}
+
+/** Hosted/cloud remote embedding provider with the 120s hang floor. */
+export function createHostedRemoteEmbeddingProvider(
+  params: Omit<Parameters<typeof createRemoteEmbeddingProvider>[0], "timeoutMs"> & {
+    timeoutMs?: number;
+  },
+): EmbeddingProvider {
+  return createRemoteEmbeddingProvider({
+    ...params,
+    timeoutMs: params.timeoutMs ?? MEMORY_REMOTE_HTTP_TIMEOUT_HOSTED_MS,
+  });
 }
 
 /** Resolve a normalized remote embedding client from provider config and model options. */

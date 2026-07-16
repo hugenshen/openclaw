@@ -1,6 +1,10 @@
 // Memory Host SDK tests cover embeddings remote fetch behavior.
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fetchRemoteEmbeddingVectors } from "./embeddings-remote-fetch.js";
+import {
+  fetchHostedRemoteEmbeddingVectors,
+  fetchRemoteEmbeddingVectors,
+} from "./embeddings-remote-fetch.js";
+import { MEMORY_REMOTE_HTTP_TIMEOUT_HOSTED_MS } from "./remote-http.js";
 
 const postJsonMock = vi.hoisted(() => vi.fn());
 
@@ -12,6 +16,7 @@ function requirePostJsonParams(): {
   url?: unknown;
   headers?: unknown;
   signal?: unknown;
+  timeoutMs?: unknown;
   body?: unknown;
   errorPrefix?: unknown;
 } {
@@ -137,5 +142,27 @@ describe("fetchRemoteEmbeddingVectors", () => {
         errorPrefix: "embedding fetch failed",
       }),
     ).rejects.toThrow("embedding fetch failed: malformed JSON response");
+  });
+});
+
+describe("fetchHostedRemoteEmbeddingVectors", () => {
+  beforeEach(() => {
+    postJsonMock.mockReset();
+  });
+
+  it("defaults timeoutMs to the hosted 120s hang floor used by OpenAI/Voyage callers", async () => {
+    postJsonMock.mockImplementationOnce(async (params) => {
+      return await params.parse({ data: [{ embedding: [0.1] }] });
+    });
+
+    await fetchHostedRemoteEmbeddingVectors({
+      url: "https://api.openai.com/v1/embeddings",
+      headers: { Authorization: "Bearer test" },
+      body: { model: "text-embedding-3-small", input: ["proof"] },
+      errorPrefix: "openai embeddings failed",
+    });
+
+    expect(requirePostJsonParams().timeoutMs).toBe(MEMORY_REMOTE_HTTP_TIMEOUT_HOSTED_MS);
+    expect(MEMORY_REMOTE_HTTP_TIMEOUT_HOSTED_MS).toBe(120_000);
   });
 });

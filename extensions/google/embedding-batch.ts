@@ -10,7 +10,7 @@ import {
   normalizeBatchBaseUrl,
   readEmbeddingBatchJsonl,
   sanitizeAndNormalizeEmbedding,
-  withRemoteHttpResponse,
+  withHostedRemoteHttpResponse,
   type EmbeddingBatchExecutionParams,
 } from "openclaw/plugin-sdk/memory-core-host-engine-embeddings";
 import {
@@ -192,7 +192,7 @@ async function submitGeminiBatch(params: {
     baseUrl,
     requests: params.requests.length,
   });
-  const filePayload = await withRemoteHttpResponse({
+  const filePayload = await withHostedRemoteHttpResponse({
     url: uploadUrl,
     ssrfPolicy: params.gemini.ssrfPolicy,
     init: {
@@ -229,7 +229,7 @@ async function submitGeminiBatch(params: {
     batchEndpoint,
     fileId,
   });
-  return await withRemoteHttpResponse({
+  return await withHostedRemoteHttpResponse({
     url: batchEndpoint,
     ssrfPolicy: params.gemini.ssrfPolicy,
     init: {
@@ -264,7 +264,7 @@ async function fetchGeminiBatchStatus(params: {
     : `batches/${params.batchName}`;
   const statusUrl = `${baseUrl}/${name}`;
   debugEmbeddingsLog("memory embeddings: gemini batch status", { statusUrl });
-  return await withRemoteHttpResponse({
+  return await withHostedRemoteHttpResponse({
     url: statusUrl,
     ssrfPolicy: params.gemini.ssrfPolicy,
     init: {
@@ -316,7 +316,7 @@ async function fetchGeminiBatchOutput(params: {
   const baseUrl = normalizeBatchBaseUrl(params.gemini);
   const downloadUrl = getGeminiDownloadUrl(baseUrl, params.fileId);
   debugEmbeddingsLog("memory embeddings: gemini batch download", { downloadUrl });
-  await withRemoteHttpResponse({
+  await withHostedRemoteHttpResponse({
     url: downloadUrl,
     ssrfPolicy: params.gemini.ssrfPolicy,
     init: {

@@ -1,6 +1,6 @@
 // Openai provider module implements model/runtime integration.
 import {
-  fetchRemoteEmbeddingVectors,
+  fetchHostedRemoteEmbeddingVectors,
   resolveRemoteEmbeddingClient,
   type MemoryEmbeddingProvider,
   type MemoryEmbeddingProviderCreateOptions,
@@ -66,7 +66,7 @@ export async function createOpenAiEmbeddingProvider(
       return [];
     }
     const inputType = resolveInputType(kind);
-    return await fetchRemoteEmbeddingVectors({
+    return await fetchHostedRemoteEmbeddingVectors({
       url,
       headers: client.headers,
       ssrfPolicy: client.ssrfPolicy,

@@ -20,7 +20,7 @@ function buildClient(): VoyageEmbeddingClient {
 }
 
 /**
- * Build deps whose withRemoteHttpResponse drives the real onResponse against a
+ * Build deps whose withHostedRemoteHttpResponse drives the real onResponse against a
  * caller-provided Response, so the bounded readers run exactly as in production.
  */
 function buildDeps(response: Response): Parameters<typeof fetchVoyageBatchStatus>[0]["deps"] {
@@ -33,8 +33,9 @@ function buildDeps(response: Response): Parameters<typeof fetchVoyageBatchStatus
     uploadBatchJsonlFile: (async () => {
       throw new Error("uploadBatchJsonlFile should not be called in these tests");
     }) as never,
-    withRemoteHttpResponse: (async (params: { onResponse: (res: Response) => Promise<unknown> }) =>
-      await params.onResponse(response)) as never,
+    withHostedRemoteHttpResponse: (async (params: {
+      onResponse: (res: Response) => Promise<unknown>;
+    }) => await params.onResponse(response)) as never,
   };
 }
 
@@ -248,7 +249,7 @@ describe("voyage batch bounded reads", () => {
           status: "completed",
           output_file_id: "output-0",
         }),
-        withRemoteHttpResponse: (async (params: {
+        withHostedRemoteHttpResponse: (async (params: {
           onResponse: (response: Response) => Promise<unknown>;
         }) => await params.onResponse(output)) as never,
       },
@@ -276,7 +277,7 @@ describe("voyage batch bounded reads", () => {
             id: "batch-0",
             status: "in_progress",
           }),
-          withRemoteHttpResponse: (async (params: {
+          withHostedRemoteHttpResponse: (async (params: {
             url: string;
             onResponse: (response: Response) => Promise<unknown>;
           }) => {

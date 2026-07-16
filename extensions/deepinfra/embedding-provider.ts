@@ -1,6 +1,6 @@
 // Deepinfra provider module implements model/runtime integration.
 import {
-  createRemoteEmbeddingProvider,
+  createHostedRemoteEmbeddingProvider,
   resolveRemoteEmbeddingClient,
   type MemoryEmbeddingProviderCreateOptions,
   type MemoryEmbeddingProviderCreateResult,
@@ -26,7 +26,7 @@ export async function createDeepInfraEmbeddingProvider(
     defaultBaseUrl: DEEPINFRA_BASE_URL,
     normalizeModel: (model) => normalizeDeepInfraModelRef(model, defaultModel),
   });
-  const provider = createRemoteEmbeddingProvider({
+  const provider = createHostedRemoteEmbeddingProvider({
     id: "deepinfra",
     client,
     errorPrefix: "DeepInfra embeddings API error",

@@ -223,7 +223,9 @@ export function readPluginSdkSurfaceBudgets(env = process.env) {
       // +4: group scope encoder/key builder (channel-policy + compat mirror).
       // Harvest: channel-ingress -64; dead channel-message dispatch aliases -23.
       // Harvest: retired qa-live-transport-scenarios subpath -6.
-      10606,
+      // +3: hosted memory remote HTTP helpers (withHosted / fetchHosted / createHosted) keep
+      // timeout policy package-private while giving hosted providers a 120s hang floor.
+      10609,
       env,
     ),
     publicFunctionExports: readPluginSdkSurfaceBudgetEnv(
@@ -232,7 +234,8 @@ export function readPluginSdkSurfaceBudgets(env = process.env) {
       // +4: group scope encoder/key builder (channel-policy + compat mirror).
       // Harvest: channel-ingress -19; dead channel-message dispatch aliases -23.
       // Harvest: retired qa-live-transport-scenarios subpath -3.
-      5341,
+      // +3: hosted memory remote HTTP helpers (withHosted / fetchHosted / createHosted).
+      5344,
       env,
     ),
     publicDeprecatedExports: readPluginSdkSurfaceBudgetEnv(

@@ -3,7 +3,7 @@ import {
   buildRemoteBaseUrlPolicy,
   debugEmbeddingsLog,
   sanitizeAndNormalizeEmbedding,
-  withRemoteHttpResponse,
+  withHostedRemoteHttpResponse,
   type EmbeddingInput,
   type MemoryEmbeddingProvider,
   type MemoryEmbeddingProviderCreateOptions,
@@ -226,7 +226,7 @@ async function fetchGeminiEmbeddingPayload(params: {
         ...authHeaders.headers,
         ...params.client.headers,
       };
-      return await withRemoteHttpResponse({
+      return await withHostedRemoteHttpResponse({
         url: params.endpoint,
         ssrfPolicy: params.client.ssrfPolicy,
         signal: params.signal,

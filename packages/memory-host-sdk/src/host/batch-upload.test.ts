@@ -1,13 +1,13 @@
 // Memory Host SDK tests cover batch upload behavior.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { uploadBatchJsonlFile } from "./batch-upload.js";
-import { withRemoteHttpResponse } from "./remote-http.js";
+import { withHostedRemoteHttpResponse } from "./remote-http.js";
 
 vi.mock("./remote-http.js", () => ({
-  withRemoteHttpResponse: vi.fn(),
+  withHostedRemoteHttpResponse: vi.fn(),
 }));
 
-const remoteHttpMock = vi.mocked(withRemoteHttpResponse);
+const remoteHttpMock = vi.mocked(withHostedRemoteHttpResponse);
 
 function textResponse(body: string, status: number): Response {
   return new Response(body, { status });

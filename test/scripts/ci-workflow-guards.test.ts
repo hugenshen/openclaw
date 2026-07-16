@@ -1092,4 +1092,15 @@ describe("ci workflow guards", () => {
     expect(workflow).toContain("Network runtime boundary-sensitive added lines");
     expect(workflow).toContain("if: ${{ github.event_name != 'pull_request' }}");
   });
+
+  it("bounds Windows Testbox phone-home POSTs with connection and transfer deadlines", () => {
+    const workflow = readFileSync(".github/workflows/windows-blacksmith-testbox.yml", "utf8");
+    const phoneHomeCurls = workflow.match(/curl[^\n]*phone-home[^\n]*/g) ?? [];
+
+    expect(phoneHomeCurls.length).toBeGreaterThanOrEqual(2);
+    for (const line of phoneHomeCurls) {
+      expect(line).toContain("--connect-timeout");
+      expect(line).toContain("--max-time");
+    }
+  });
 });

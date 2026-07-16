@@ -554,7 +554,7 @@ jobs:
           gateway_pid="$!"
 
           for _ in $(seq 1 120); do
-            if curl -fsS "http://127.0.0.1:${gateway_port}/healthz" >/dev/null; then
+            if curl -fsS --max-time 5 "http://127.0.0.1:${gateway_port}/healthz" >/dev/null; then
               break
             fi
             if ! kill -0 "$gateway_pid" 2>/dev/null; then
@@ -563,7 +563,7 @@ jobs:
             fi
             sleep 1
           done
-          curl -fsS "http://127.0.0.1:${gateway_port}/healthz" >/dev/null
+          curl -fsS --max-time 5 "http://127.0.0.1:${gateway_port}/healthz" >/dev/null
 
           OPENCLAW_HOME="$gateway_home" OPENCLAW_STATE_DIR="$gateway_state" OPENCLAW_CONFIG_PATH="$gateway_config" OPENCLAW_GATEWAY_PORT="$gateway_port" \
             node --import tsx scripts/bench-cli-startup.ts \

@@ -165,7 +165,7 @@ describe("fetchDiscordGatewayMetadataGuarded bounded reads", () => {
     });
 
     const fetchPromise = fetchDiscordGatewayInfoWithTimeout({
-      token: "test-token",
+      token: "test",
       timeoutMs: 250,
       fetchImpl: fetchDiscordGatewayMetadataGuarded,
     }).catch((error: unknown) => error);

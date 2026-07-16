@@ -38,8 +38,18 @@ jobs:
           OPENGREP_VERSION: v1.22.0
           OPENGREP_INSTALL_SHA: f458d7f0d52cc58eae1ca3cf3d5caf101e637519
         run: |
-          curl -fsSL "https://raw.githubusercontent.com/opengrep/opengrep/${OPENGREP_INSTALL_SHA}/install.sh" \
-            | bash -s -- -v "$OPENGREP_VERSION"
+          # Download install.sh fully before executing it (no curl|bash stdin pipe).
+          # install.sh then curls the ~50 MB release binary/cert/signature with no
+          # per-transfer deadlines, so wrap the whole install in GNU timeout.
+          timeout --signal=TERM --kill-after=15s 600s \
+            bash -c '
+              set -euo pipefail
+              install_sh="${RUNNER_TEMP}/opengrep-install-${OPENGREP_INSTALL_SHA}.sh"
+              curl -fsSL --connect-timeout 10 --max-time 30 \
+                "https://raw.githubusercontent.com/opengrep/opengrep/${OPENGREP_INSTALL_SHA}/install.sh" \
+                -o "$install_sh"
+              bash "$install_sh" -v "$OPENGREP_VERSION"
+            '
           echo "$HOME/.opengrep/cli/latest" >> "$GITHUB_PATH"
 
       - name: Verify opengrep

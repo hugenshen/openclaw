@@ -3881,4 +3881,24 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
       'call.getFile().getRelativePath() = "extensions/codex/src/app-server/transport-websocket.ts"',
     );
   });
+
+  it("bounds the full opengrep install including installer child downloads", () => {
+    const workflowPaths = [OPENGREP_PR_DIFF_WORKFLOW, OPENGREP_FULL_WORKFLOW];
+
+    for (const workflowPath of workflowPaths) {
+      const workflow = parse(readFileSync(workflowPath, "utf8")) as {
+        jobs: { scan: { steps: WorkflowStep[] } };
+      };
+      const installStep = workflow.jobs.scan.steps.find((step) => step.name === "Install opengrep");
+      const run = installStep?.run ?? "";
+
+      // Download install.sh to a file first, then execute it under GNU timeout so
+      // installer child curls for binary/cert/signature cannot hang the scan job.
+      expect(run).toContain("timeout --signal=TERM --kill-after=15s 600s");
+      expect(run).toContain("curl -fsSL --connect-timeout 10 --max-time 30");
+      expect(run).toContain("opengrep/opengrep/${OPENGREP_INSTALL_SHA}/install.sh");
+      expect(run).toContain('bash "$install_sh" -v "$OPENGREP_VERSION"');
+      expect(run).not.toContain("| bash -s");
+    }
+  });
 });

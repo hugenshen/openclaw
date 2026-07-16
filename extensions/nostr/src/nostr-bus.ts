@@ -30,6 +30,7 @@ import { createSeenTracker, type SeenTracker } from "./seen-tracker.js";
 // ============================================================================
 
 const STARTUP_LOOKBACK_SEC = 120; // tolerate relay lag / clock skew
+const RELAY_DM_PUBLISH_TIMEOUT_MS = 5000; // per-relay publish timeout for DM send
 const MAX_PERSISTED_EVENT_IDS = 5000;
 const STATE_PERSIST_DEBOUNCE_MS = 5000; // Debounce state writes
 const DEFAULT_INBOUND_GUARD_POLICY = createDirectDmPreCryptoGuardPolicy();
@@ -774,7 +775,26 @@ async function sendEncryptedDm(
         throw new Error(`Failed to create publish promise for relay ${relay}`);
       }
       const publishPromise = publishPromises[0];
-      await publishPromise;
+      // Race against a per-relay timeout so a stalled relay does not block the
+      // DM send indefinitely. nostr-profile.ts uses the same pattern; the bus
+      // was missing it — a hung publish promise could stall the caller forever.
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () =>
+            reject(
+              new Error(`relay ${relay} publish timed out after ${RELAY_DM_PUBLISH_TIMEOUT_MS}ms`),
+            ),
+          RELAY_DM_PUBLISH_TIMEOUT_MS,
+        );
+      });
+      try {
+        await Promise.race([publishPromise, timeoutPromise]);
+      } finally {
+        if (timer !== undefined) {
+          clearTimeout(timer);
+        }
+      }
       const latency = Date.now() - startTime;
 
       // Record success

@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { gunzipSync } from "node:zlib";
+import { buildTimeoutAbortSignal } from "openclaw/plugin-sdk/extension-shared";
 import {
   asDateTimestampMs,
   resolveExpiresAtMsFromDurationMs,
@@ -11,6 +12,7 @@ import {
 } from "openclaw/plugin-sdk/number-runtime";
 import { readResponseWithLimit } from "openclaw/plugin-sdk/response-limit-runtime";
 import { normalizeOptionalString } from "openclaw/plugin-sdk/string-coerce-runtime";
+import { withTimeout } from "openclaw/plugin-sdk/text-utility-runtime";
 
 type GoogleAuthorizedUserCredentials = {
   type: "authorized_user";
@@ -41,6 +43,7 @@ type GoogleOauthTokenResponsePayload = {
 const GCP_VERTEX_CREDENTIALS_MARKER = "gcp-vertex-credentials";
 const GOOGLE_OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token";
 const GOOGLE_VERTEX_OAUTH_SCOPE = "https://www.googleapis.com/auth/cloud-platform";
+const GOOGLE_VERTEX_ADC_TOKEN_REFRESH_TIMEOUT_MS = 30_000;
 // Hold tokens slightly less long than reported expiry (Google's recommendation
 // is a 60s buffer) so we don't ship a request that's already revoked when it
 // leaves the gateway.
@@ -48,6 +51,7 @@ const GOOGLE_VERTEX_TOKEN_EXPIRY_BUFFER_MS = 60_000;
 const GOOGLE_VERTEX_DEFAULT_TOKEN_LIFETIME_SECONDS = 3600;
 const GOOGLE_VERTEX_AUTHLIB_TOKEN_CACHE_MS = 5 * 60_000;
 const GOOGLE_OAUTH_TOKEN_RESPONSE_MAX_BYTES = 1024 * 1024;
+const VERTEX_ADC_TEST_API_KEY = Symbol.for("openclaw.google.vertexAdcTestApi");
 
 let cachedGoogleVertexAuthorizedUserToken: GoogleVertexAuthorizedUserToken | undefined;
 let cachedGoogleAuthClient:
@@ -91,10 +95,16 @@ function resolveGoogleAuthLibraryTokenExpiresAtMs(nowRaw = Date.now()): number |
     : resolveExpiresAtMsFromDurationMs(GOOGLE_VERTEX_AUTHLIB_TOKEN_CACHE_MS, { nowMs });
 }
 
-export function resetGoogleVertexAuthorizedUserTokenCacheForTest(): void {
+function resetGoogleVertexAuthorizedUserTokenCacheForTest(): void {
   cachedGoogleVertexAuthorizedUserToken = undefined;
   cachedGoogleAuthClient = undefined;
   cachedGoogleVertexAdcToken = undefined;
+}
+
+if (process.env.VITEST) {
+  (globalThis as Record<PropertyKey, unknown>)[VERTEX_ADC_TEST_API_KEY] = {
+    reset: resetGoogleVertexAuthorizedUserTokenCacheForTest,
+  };
 }
 
 export function isGoogleVertexCredentialsMarker(
@@ -191,9 +201,7 @@ function readGoogleAdcCredentialsTypeSync(credentialsPath: string): string | und
  * probes the default metadata hosts asynchronously at request time, and the
  * provider wires the Vertex transport without this sync predicate.
  */
-export function hasGoogleVertexAuthorizedUserAdcSync(
-  env: NodeJS.ProcessEnv = process.env,
-): boolean {
+function hasGoogleVertexAuthorizedUserAdcSync(env: NodeJS.ProcessEnv = process.env): boolean {
   const credentialsPath = resolveGoogleApplicationCredentialsPath(env);
   if (credentialsPath) {
     const type = readGoogleAdcCredentialsTypeSync(credentialsPath);
@@ -243,12 +251,26 @@ async function refreshGoogleVertexAuthorizedUserAccessToken(params: {
     refresh_token: refreshToken,
     grant_type: "refresh_token",
   });
-  const response = await (params.fetchImpl ?? fetch)(GOOGLE_OAUTH_TOKEN_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body,
+  const { signal, cleanup } = buildTimeoutAbortSignal({
+    timeoutMs: GOOGLE_VERTEX_ADC_TOKEN_REFRESH_TIMEOUT_MS,
+    operation: "google-vertex-adc-token-refresh",
+    url: GOOGLE_OAUTH_TOKEN_URL,
   });
-  const payload = await readGoogleOauthTokenResponsePayload(response);
+  let response: Response;
+  let payload: GoogleOauthTokenResponsePayload | undefined;
+  try {
+    response = await (params.fetchImpl ?? fetch)(GOOGLE_OAUTH_TOKEN_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body,
+      signal,
+    });
+    // Keep the request deadline active through body consumption. Fetch resolves
+    // at headers, so cleanup here would leave a stalled token body unbounded.
+    payload = await readGoogleOauthTokenResponsePayload(response);
+  } finally {
+    cleanup();
+  }
   if (!response.ok) {
     const description = normalizeOptionalString(payload?.error_description);
     const code = normalizeOptionalString(payload?.error);
@@ -345,18 +367,42 @@ async function resolveGoogleVertexAccessTokenViaGoogleAuth(): Promise<string> {
         // It also caches tokens internally and refreshes before expiry.
         return new GoogleAuth({
           scopes: [GOOGLE_VERTEX_OAUTH_SCOPE],
+          // Best-effort cancellation for clients that use the shared transporter.
+          // WIF STS and GCE metadata need the owner-level deadline below.
+          clientOptions: {
+            transporterOptions: { timeout: GOOGLE_VERTEX_ADC_TOKEN_REFRESH_TIMEOUT_MS },
+          },
         });
       }),
     };
   }
-  const auth = await cachedGoogleAuthClient.promise;
+  const authClient = cachedGoogleAuthClient;
+  const auth = await authClient.promise;
 
   const cached = cachedGoogleVertexAdcToken;
   if (cached && isGoogleVertexTokenFresh(cached.expiresAtMs)) {
     return cached.token;
   }
 
-  const token = await auth.getAccessToken();
+  // Some google-auth-library ADC implementations bypass the configured Gaxios
+  // transporter, so this owner-level deadline also bounds STS and metadata paths.
+  let token: string | null | undefined;
+  try {
+    token = await withTimeout(auth.getAccessToken(), GOOGLE_VERTEX_ADC_TOKEN_REFRESH_TIMEOUT_MS, {
+      createError: () => new DOMException("request timed out", "TimeoutError"),
+    });
+  } catch (error) {
+    // The dependency coalesces in-flight refreshes. Drop only this timed-out
+    // client so a recovered identity endpoint gets a fresh attempt next time.
+    if (
+      error instanceof DOMException &&
+      error.name === "TimeoutError" &&
+      cachedGoogleAuthClient === authClient
+    ) {
+      cachedGoogleAuthClient = undefined;
+    }
+    throw error;
+  }
   const normalized = normalizeOptionalString(token);
   if (!normalized) {
     throw new Error(

@@ -1,5 +1,9 @@
 // Feishu tests cover bot plugin behavior.
-import type * as ConversationRuntime from "openclaw/plugin-sdk/conversation-runtime";
+import type {
+  ensureConfiguredBindingRouteReady,
+  getSessionBindingService,
+  resolveConfiguredBindingRoute,
+} from "openclaw/plugin-sdk/conversation-runtime";
 import { createRuntimeEnv } from "openclaw/plugin-sdk/plugin-test-runtime";
 import type { ResolvedAgentRoute } from "openclaw/plugin-sdk/routing";
 import { resolveGroupSessionKey } from "openclaw/plugin-sdk/session-store-runtime";
@@ -12,13 +16,11 @@ import { resolveFeishuMessageDedupeKey } from "./dedupe-key.js";
 import { createFeishuMessageReceiveHandler } from "./monitor.message-handler.js";
 import { setFeishuRuntime } from "./runtime.js";
 
-type ConfiguredBindingRoute = ReturnType<typeof ConversationRuntime.resolveConfiguredBindingRoute>;
+type ConfiguredBindingRoute = ReturnType<typeof resolveConfiguredBindingRoute>;
 type BoundConversation = ReturnType<
-  ReturnType<typeof ConversationRuntime.getSessionBindingService>["resolveByConversation"]
+  ReturnType<typeof getSessionBindingService>["resolveByConversation"]
 >;
-type BindingReadiness = Awaited<
-  ReturnType<typeof ConversationRuntime.ensureConfiguredBindingRouteReady>
->;
+type BindingReadiness = Awaited<ReturnType<typeof ensureConfiguredBindingRouteReady>>;
 type ReplyDispatcher = Parameters<
   PluginRuntime["channel"]["reply"]["withReplyDispatcher"]
 >[0]["dispatcher"];
@@ -2036,6 +2038,7 @@ describe("handleFeishuMessage command authorization", () => {
       From?: string;
       OriginatingChannel?: string;
       OriginatingTo?: string;
+      NativeChannelId?: string;
       SenderId?: string;
       To?: string;
     }>(mockFinalizeInboundContext, 0, 0);
@@ -2044,6 +2047,7 @@ describe("handleFeishuMessage command authorization", () => {
     expect(finalized.To).toBe("chat:oc-group");
     expect(finalized.OriginatingChannel).toBe("feishu");
     expect(finalized.OriginatingTo).toBe("chat:oc-group");
+    expect(finalized.NativeChannelId).toBe("oc-group");
     expect(finalized.SenderId).toBe("ou-allowed");
     const groupSessionKey = resolveGroupSessionKey(finalized as never);
     if (!groupSessionKey) {
@@ -4589,3 +4593,4 @@ describe("createFeishuMessageReceiveHandler media dedupe", () => {
     expect(secondCall.processingClaimHeld).toBe(true);
   });
 });
+/* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

@@ -63,6 +63,7 @@ jobs:
           github-token: ${{ github.token }}
 
       - name: Validate release approval and target
+        id: release_approval
         env:
           APPROVAL_PATH: ${{ runner.temp }}/android-release-approval/approval.json
           DIRECT_RELEASE_RECOVERY: ${{ inputs.direct_release_recovery && 'true' || 'false' }}
@@ -105,7 +106,7 @@ jobs:
             exit 1
           fi
 
-          release_json="$(gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" --json tagName,isDraft,isPrerelease,assets,url)"
+          release_json="$(gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" --json tagName,isDraft,isPrerelease,createdAt,assets,url)"
           if [[ "$(printf '%s' "${release_json}" | jq -r '.tagName')" != "${RELEASE_TAG}" ]]; then
             echo "GitHub release tag does not match ${RELEASE_TAG}." >&2
             exit 1
@@ -118,6 +119,9 @@ jobs:
             echo "Normal Android promotion requires the target GitHub release to remain a draft." >&2
             exit 1
           fi
+          release_created_at="$(printf '%s' "${release_json}" | jq -er '.createdAt')"
+          build_timestamp="$(date -u -d "${release_created_at}" +%Y-%m-%dT%H:%M:%SZ)"
+          echo "build_timestamp=${build_timestamp}" >> "${GITHUB_OUTPUT}"
           unexpected_assets="$(printf '%s' "${release_json}" | jq -r '[.assets[]? | select(.name | startswith("OpenClaw-Android")) | .name] | join(", ")')"
           if [[ -n "${unexpected_assets}" ]]; then
             echo "Target release already contains Android assets: ${unexpected_assets}. Immutable recovery accepts them only after rebuilding identical bytes." >&2
@@ -180,7 +184,7 @@ jobs:
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
         with:
           path: ~/.android-sdk
-          key: ${{ runner.os }}-android-sdk-v1-cmdline-14742923-platform-36-build-tools-36.0.0
+          key: ${{ runner.os }}-android-sdk-v1-cmdline-14742923-platform-37.0-build-tools-36.0.0
           restore-keys: |
             ${{ runner.os }}-android-sdk-v1-
 
@@ -193,7 +197,7 @@ jobs:
           URL="https://dl.google.com/android/repository/${ARCHIVE}"
           if [[ ! -x "${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager" ]]; then
             mkdir -p "${ANDROID_SDK_ROOT}/cmdline-tools"
-            curl -fsSL "${URL}" -o "${RUNNER_TEMP}/${ARCHIVE}"
+            curl -fsSL --connect-timeout 10 --max-time 300 "${URL}" -o "${RUNNER_TEMP}/${ARCHIVE}"
             rm -rf "${ANDROID_SDK_ROOT}/cmdline-tools/latest"
             unzip -q "${RUNNER_TEMP}/${ARCHIVE}" -d "${ANDROID_SDK_ROOT}/cmdline-tools"
             mv "${ANDROID_SDK_ROOT}/cmdline-tools/cmdline-tools" "${ANDROID_SDK_ROOT}/cmdline-tools/latest"
@@ -209,7 +213,7 @@ jobs:
           yes | sdkmanager --sdk_root="${ANDROID_SDK_ROOT}" --licenses >/dev/null
           sdkmanager --sdk_root="${ANDROID_SDK_ROOT}" --install \
             "platform-tools" \
-            "platforms;android-36" \
+            "platforms;android-37.0" \
             "build-tools;36.0.0"
 
       - name: Create apps-signing read token
@@ -247,7 +251,9 @@ jobs:
 
       - name: Prepare and verify signed Android APK
         env:
+          GIT_COMMIT: ${{ inputs.release_target_sha }}
           GH_TOKEN: ${{ github.token }}
+          OPENCLAW_BUILD_TIMESTAMP: ${{ steps.release_approval.outputs.build_timestamp }}
           RELEASE_TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail

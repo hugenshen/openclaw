@@ -12,8 +12,12 @@ import {
   buildBlockedToolResult,
   recordAdjustedParamsForToolCall,
   recordStructuredReplayTrustForToolCall,
-  testing as beforeToolCallTesting,
 } from "./agent-tools.before-tool-call.js";
+import {
+  adjustedParamsByToolCallId,
+  buildAdjustedParamsKey,
+  recordToolExecutionTracked,
+} from "./agent-tools.before-tool-call.state.js";
 import type { MessagingToolSend } from "./embedded-agent-messaging.types.js";
 import { buildEmbeddedRunPayloads } from "./embedded-agent-runner/run/payloads.js";
 import {
@@ -29,6 +33,8 @@ import type {
 type ToolExecutionStartEvent = Extract<AgentEvent, { type: "tool_execution_start" }>;
 type ToolExecutionEndEvent = Extract<AgentEvent, { type: "tool_execution_end" }>;
 type PayloadToolMetas = Parameters<typeof buildEmbeddedRunPayloads>[0]["toolMetas"];
+
+const beforeToolCallTesting = { adjustedParamsByToolCallId, buildAdjustedParamsKey };
 
 function createTestContext(): {
   ctx: ToolHandlerContext;
@@ -145,6 +151,52 @@ function requireString(value: unknown, label: string): string {
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
+
+describe("update_plan progress events", () => {
+  it("emits the typed full plan snapshot after a successful result", async () => {
+    const { ctx, onAgentEvent } = createTestContext();
+    const emitted: CapturedAgentEvent[] = [];
+    const unsubscribe = registerAgentEventListener((event) => emitted.push(event));
+    try {
+      await handleToolExecutionEnd(ctx, {
+        type: "tool_execution_end",
+        toolName: "update_plan",
+        toolCallId: "plan-1",
+        isError: false,
+        result: {
+          content: [],
+          details: {
+            status: "updated",
+            explanation: "Implementation underway",
+            plan: [
+              { step: "Inspect", status: "completed" },
+              { step: "Patch", status: "in_progress" },
+            ],
+          },
+        },
+      });
+      await Promise.resolve();
+
+      const expected = {
+        stream: "plan",
+        data: {
+          phase: "update",
+          title: "Plan updated",
+          source: "openclaw",
+          explanation: "Implementation underway",
+          steps: [
+            { step: "Inspect", status: "completed" },
+            { step: "Patch", status: "in_progress" },
+          ],
+        },
+      };
+      expect(onAgentEvent).toHaveBeenCalledWith(expected);
+      expect(emitted).toContainEqual(expect.objectContaining(expected));
+    } finally {
+      unsubscribe();
+    }
+  });
+});
 
 function requireRecord(value: unknown, label: string): Record<string, unknown> {
   if (!isRecord(value)) {
@@ -520,6 +572,147 @@ describe("handleToolExecutionEnd cron mutation tracking", () => {
     expect(ctx.state.itemActiveIds.size).toBe(0);
   });
 
+  it.each([
+    ["exec", "openclaw cron add --at +1h --message 'follow up' --name reminder"],
+    ["exec", "npx openclaw cron add --at=+1h --message 'follow up'"],
+    ["exec", "bunx openclaw cron add --at +1h --message 'follow up'"],
+    ["exec", "pnpm exec openclaw cron add --at +1h --message 'follow up'"],
+    ["exec", "pnpm dlx openclaw cron add --at +1h --message 'follow up'"],
+    ["exec", "npx -y openclaw cron add --at +1h --message 'follow up'"],
+    ["exec", "bunx --bun openclaw cron add --at +1h --message 'follow up'"],
+    ["exec", "pnpm dlx openclaw@latest cron add --at +1h --message 'follow up'"],
+    ["exec", "npx openclaw@latest cron add --at +1h --message 'follow up'"],
+    ["exec", "bunx openclaw@latest cron add --at +1h --message 'follow up'"],
+    ["exec", "/usr/local/bin/openclaw cron add --at +1h --message 'follow up'"],
+    ["bash", "corepack pnpm exec openclaw cron add --at +1h --message 'follow up'"],
+    ["exec", "env OPENCLAW_PROFILE=test openclaw cron add --at +1h --message 'follow up'"],
+    ["exec", "openclaw cron create --at +1h --message 'follow up'"],
+    ["exec", "openclaw --profile work cron create --at +1h --message 'follow up'"],
+    ["exec", "openclaw --dev cron add --at +1h --message 'follow up'"],
+    ["exec", "openclaw --log-level debug --no-color cron add --at +1h --message 'follow up'"],
+    ["exec", "openclaw --container helper cron add --at +1h --message 'follow up'"],
+    ["exec", "openclaw cron add --at +1h --message 'follow up || wait'"],
+    ["exec", "openclaw cron add --at +1h --message 'follow up' 2>&1"],
+  ] as const)("increments successfulCronAdds when %s runs %s", async (toolName, command) => {
+    const { ctx } = createTestContext();
+    await handleToolExecutionStart(
+      ctx as never,
+      {
+        type: "tool_execution_start",
+        toolName,
+        toolCallId: "tool-shell-cron-add",
+        args: { command },
+      } as never,
+    );
+
+    await handleToolExecutionEnd(
+      ctx as never,
+      {
+        type: "tool_execution_end",
+        toolName,
+        toolCallId: "tool-shell-cron-add",
+        isError: false,
+        result: {
+          details: {
+            status: "completed",
+            exitCode: 0,
+            durationMs: 12,
+            aggregated: "warning text and human-readable success output",
+          },
+        },
+      } as never,
+    );
+
+    expect(ctx.state.successfulCronAdds).toBe(1);
+  });
+
+  it("does not increment successfulCronAdds when shell cron add fails", async () => {
+    const { ctx } = createTestContext();
+    await handleToolExecutionStart(
+      ctx as never,
+      {
+        type: "tool_execution_start",
+        toolName: "exec",
+        toolCallId: "tool-exec-cron-add-failed",
+        args: {
+          command: "openclaw cron add --at +1h --message 'follow up' --name reminder",
+        },
+      } as never,
+    );
+
+    await handleToolExecutionEnd(
+      ctx as never,
+      {
+        type: "tool_execution_end",
+        toolName: "exec",
+        toolCallId: "tool-exec-cron-add-failed",
+        isError: false,
+        result: {
+          details: {
+            status: "completed",
+            exitCode: 1,
+            aggregated: "Cron job name is required.",
+          },
+        },
+      } as never,
+    );
+
+    expect(ctx.state.successfulCronAdds).toBe(0);
+  });
+
+  it.each([
+    ["openclaw cron list --json", "a different cron action"],
+    ["echo openclaw cron add --at +1h", "a command that only mentions cron add"],
+    ["openclaw cron add --at '+1h", "an unterminated shell argument"],
+    ["cd /tmp && openclaw cron add --at +1h", "a compound command"],
+    ["openclaw cron add --help", "the add command help"],
+    ["openclaw cron create -h", "the create alias help"],
+    ["openclaw cron add --bad||true", "a masked cron failure"],
+    ["openclaw cron add --at +1h; true", "a semicolon suffix"],
+    ["openclaw cron add --at +1h | cat", "a pipeline suffix"],
+    ["openclaw cron add --at +1h & true", "a background suffix"],
+    ["openclaw cron add --at +1h\ntrue", "a newline-separated suffix"],
+    ["openclaw cron add --bad # ignored\ntrue", "a comment-masked cron failure"],
+    ["npx -y echo openclaw cron add --at +1h", "a package runner for another executable"],
+    ["pnpm openclaw cron add --at +1h", "a bare pnpm package script"],
+    ["corepack pnpm openclaw cron add --at +1h", "a corepack pnpm package script"],
+    ["openclaw@latest cron add --at +1h", "a package spec without a package runner"],
+    ["pnpm exec openclaw@latest cron add --at +1h", "a package spec passed to pnpm exec"],
+    ["openclaw cron add --bad &>/tmp/cron.log", "a bash-only combined redirection"],
+    ["openclaw cron add --bad &>>/tmp/cron.log", "a bash-only append redirection"],
+  ])("does not count %s (%s)", async (command) => {
+    const { ctx } = createTestContext();
+    await handleToolExecutionStart(
+      ctx as never,
+      {
+        type: "tool_execution_start",
+        toolName: "exec",
+        toolCallId: "tool-exec-not-cron-add",
+        args: { command },
+      } as never,
+    );
+
+    await handleToolExecutionEnd(
+      ctx as never,
+      {
+        type: "tool_execution_end",
+        toolName: "exec",
+        toolCallId: "tool-exec-not-cron-add",
+        isError: false,
+        result: {
+          details: {
+            status: "completed",
+            exitCode: 0,
+            durationMs: 12,
+            aggregated: "completed",
+          },
+        },
+      } as never,
+    );
+
+    expect(ctx.state.successfulCronAdds).toBe(0);
+  });
+
   it("keeps pre-execution cron failures replay-safe", async () => {
     const { ctx } = createTestContext();
     await handleToolExecutionStart(
@@ -541,6 +734,71 @@ describe("handleToolExecutionEnd cron mutation tracking", () => {
         isError: true,
         executionStarted: false,
         result: { details: { status: "error", error: "job required" } },
+      } as never,
+    );
+
+    expect(ctx.state.replayState).toEqual({
+      replayInvalid: false,
+      hadPotentialSideEffects: false,
+    });
+    expect(ctx.state.lastToolError?.mutatingAction).toBe(false);
+  });
+
+  it("uses wrapped execution-boundary evidence when terminal events omit it", async () => {
+    const { ctx } = createTestContext();
+    const toolCallId = "tool-cron-aborted-before-execution";
+    recordToolExecutionTracked(toolCallId, "run-test");
+    await handleToolExecutionStart(
+      ctx as never,
+      {
+        type: "tool_execution_start",
+        toolName: "cron",
+        toolCallId,
+        args: { action: "add", job: { name: "reminder" } },
+      } as never,
+    );
+
+    await handleToolExecutionEnd(
+      ctx as never,
+      {
+        type: "tool_execution_end",
+        toolName: "cron",
+        toolCallId,
+        isError: true,
+        result: { details: { status: "error", error: "tool timed out" } },
+      } as never,
+    );
+
+    expect(ctx.state.replayState).toEqual({
+      replayInvalid: false,
+      hadPotentialSideEffects: false,
+    });
+    expect(ctx.state.lastToolError?.mutatingAction).toBe(false);
+  });
+
+  it("prefers wrapped execution-boundary evidence over a terminal event default", async () => {
+    const { ctx } = createTestContext();
+    const toolCallId = "tool-cron-cancelled-before-body";
+    recordToolExecutionTracked(toolCallId, "run-test");
+    await handleToolExecutionStart(
+      ctx as never,
+      {
+        type: "tool_execution_start",
+        toolName: "cron",
+        toolCallId,
+        args: { action: "add", job: { name: "reminder" } },
+      } as never,
+    );
+
+    await handleToolExecutionEnd(
+      ctx as never,
+      {
+        type: "tool_execution_end",
+        toolName: "cron",
+        toolCallId,
+        isError: true,
+        executionStarted: true,
+        result: { details: { status: "error", error: "cancelled before tool body" } },
       } as never,
     );
 
@@ -834,6 +1092,56 @@ describe("handleToolExecutionEnd mutating failure recovery", () => {
     expect(ctx.state.lastToolError).toMatchObject({
       toolName: "exec",
       middlewareError: true,
+    });
+  });
+
+  it("preserves an unresolved mutation across a later read failure", async () => {
+    const { ctx } = createTestContext();
+
+    await handleToolExecutionStart(
+      ctx as never,
+      {
+        type: "tool_execution_start",
+        toolName: "write",
+        toolCallId: "tool-write-failed",
+        args: { path: "/tmp/demo.txt", content: "updated" },
+      } as never,
+    );
+    await handleToolExecutionEnd(
+      ctx as never,
+      {
+        type: "tool_execution_end",
+        toolName: "write",
+        toolCallId: "tool-write-failed",
+        isError: true,
+        result: { error: "permission denied" },
+      } as never,
+    );
+
+    await handleToolExecutionStart(
+      ctx as never,
+      {
+        type: "tool_execution_start",
+        toolName: "read",
+        toolCallId: "tool-read-failed",
+        args: { path: "/tmp/missing.txt" },
+      } as never,
+    );
+    await handleToolExecutionEnd(
+      ctx as never,
+      {
+        type: "tool_execution_end",
+        toolName: "read",
+        toolCallId: "tool-read-failed",
+        isError: true,
+        result: { error: "file not found" },
+      } as never,
+    );
+
+    expect(ctx.state.lastToolError).toMatchObject({
+      toolName: "write",
+      error: "permission denied",
+      mutatingAction: true,
     });
   });
 
@@ -1533,6 +1841,33 @@ describe("handleToolExecutionEnd mutating failure recovery", () => {
 });
 
 describe("handleToolExecutionEnd timeout metadata", () => {
+  it("retains every failed call after later successes change the last-error slot", async () => {
+    const { ctx } = createTestContext();
+
+    for (const [toolCallId, isError] of [
+      ["tool-read-failed", true],
+      ["tool-read-succeeded", false],
+      ["tool-exec-failed", true],
+    ] as const) {
+      await handleToolExecutionEnd(
+        ctx as never,
+        {
+          type: "tool_execution_end",
+          toolName: toolCallId.includes("read") ? "read" : "exec",
+          toolCallId,
+          isError,
+          result: isError ? { error: `${toolCallId} failed` } : { content: "ok" },
+        } as never,
+      );
+    }
+
+    expect(ctx.state.toolMetas.map(({ toolName, isError }) => ({ toolName, isError }))).toEqual([
+      { toolName: "read", isError: true },
+      { toolName: "read", isError: undefined },
+      { toolName: "exec", isError: true },
+    ]);
+  });
+
   it("records timeout metadata for failed exec results", async () => {
     const { ctx } = createTestContext();
 
@@ -1565,6 +1900,9 @@ describe("handleToolExecutionEnd timeout metadata", () => {
       toolName: "exec",
       timedOut: true,
     });
+    expect(ctx.state.toolMetas).toEqual([
+      expect.objectContaining({ toolName: "exec", isError: true }),
+    ]);
   });
 
   it("uses raw exec metadata for failed tool payload warnings", async () => {
@@ -2000,10 +2338,12 @@ describe("handleToolExecutionEnd exec approval prompts", () => {
         result: {
           details: {
             status: "approval-unavailable",
-            reason: "initiating-platform-disabled",
+            reason: "no-approval-route",
             channel: "discord",
             channelLabel: "Discord",
             accountId: "work",
+            host: "node",
+            nodeId: "node-mac-1",
           },
         },
       } as never,
@@ -2013,7 +2353,13 @@ describe("handleToolExecutionEnd exec approval prompts", () => {
       requireMockCallArg(onToolResult, 0, "tool result").text,
       "tool result text",
     );
-    expect(text).toContain("native chat exec approvals are not configured on Discord");
+    expect(text).toContain("no interactive approval client is currently available");
+    expect(text).toContain(
+      "Print the Control UI URL with `openclaw dashboard --no-open`, open it in a browser, then use the approval inbox.",
+    );
+    expect(text).toContain(
+      "Inspect the node's effective exec policy with `openclaw approvals get --node node-mac-1`.",
+    );
     expect(text).not.toContain("/approve");
     expect(text).not.toContain("Pending command:");
     expect(text).not.toContain("Host:");
@@ -3272,3 +3618,4 @@ describe("control UI credential redaction (issue #72283)", () => {
     );
   });
 });
+/* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

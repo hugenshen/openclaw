@@ -9,6 +9,7 @@ import {
   normalizeOptionalLowercaseString,
   normalizeOptionalString,
 } from "@openclaw/normalization-core/string-coerce";
+import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import { Type } from "typebox";
 import { resolveWebProviderConfig } from "../../../packages/web-content-core/src/provider-runtime-shared.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
@@ -61,7 +62,7 @@ const WEB_FETCH_PROGRESS_THRESHOLD_MS = 5_000;
 const WEB_FETCH_PROGRESS_TEXT = "Fetching page content...";
 const DEFAULT_ERROR_MAX_CHARS = 4_000;
 const DEFAULT_ERROR_MAX_BYTES = 64_000;
-export const WEB_FETCH_SPILL_MAX_CHARS = 2_000_000;
+const WEB_FETCH_SPILL_MAX_CHARS = 2_000_000;
 const DEFAULT_FETCH_USER_AGENT =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_7_2) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 
@@ -252,7 +253,7 @@ function formatWebFetchTerminalPresentation(result: unknown): { text: string } |
 
 function wrapWebFetchContent(value: string, maxChars: number): WebFetchWrappedContent {
   if (maxChars <= 0) {
-    return { text: "", truncated: true, rawLength: 0, wrappedLength: 0 };
+    return { text: "", truncated: true, rawLength: value.length, wrappedLength: 0 };
   }
   const includeWarning = maxChars >= WEB_FETCH_WRAPPER_WITH_WARNING_OVERHEAD;
   const wrapperOverhead = includeWarning
@@ -266,7 +267,7 @@ function wrapWebFetchContent(value: string, maxChars: number): WebFetchWrappedCo
     return {
       text: truncatedWrapper.text,
       truncated: true,
-      rawLength: 0,
+      rawLength: value.length,
       wrappedLength: truncatedWrapper.text.length,
     };
   }
@@ -288,7 +289,7 @@ function wrapWebFetchContent(value: string, maxChars: number): WebFetchWrappedCo
   return {
     text: wrappedText,
     truncated: truncated.truncated,
-    rawLength: truncated.text.length,
+    rawLength: value.length,
     wrappedLength: wrappedText.length,
   };
 }
@@ -314,7 +315,8 @@ async function spillWebFetchContent(
   }
   // maxChars/maxCharsCap bound the model-visible return text. Recoverable spill
   // uses this fixed file cap so vanished pages can still be read after truncation.
-  const content = value.slice(0, WEB_FETCH_SPILL_MAX_CHARS);
+  const content = truncateUtf16Safe(value, WEB_FETCH_SPILL_MAX_CHARS);
+  const spilledChars = content.length;
   const fullOutputPath = await writePrivateTempFile(
     "openclaw-web-fetch",
     wrapWebContent(content, "web_fetch"),
@@ -324,7 +326,7 @@ async function spillWebFetchContent(
   const spillNote = sourceTruncated
     ? " Spilled available content from truncated response."
     : spillCapped
-      ? ` Spilled first ${WEB_FETCH_SPILL_MAX_CHARS} chars.`
+      ? ` Spilled first ${spilledChars} chars.`
       : "";
   const fullOutputFooter = formatFullOutputFooter(fullOutputPath);
   const footer = `\n\n[Showing truncated web_fetch content. ${fullOutputFooter}.${spillNote}]`;
@@ -335,7 +337,7 @@ async function spillWebFetchContent(
     visible = wrapWebFetchContent(value, maxChars - footer.length);
     text = `${visible.text}${footer}`;
   } else if (compactFooter.length <= maxChars) {
-    visible = { ...wrapped, text: "", rawLength: 0, wrappedLength: 0 };
+    visible = { ...wrapped, text: "", wrappedLength: 0 };
     text = compactFooter;
   }
   return {
@@ -344,7 +346,7 @@ async function spillWebFetchContent(
     text,
     wrappedLength: text.length,
     fullOutputPath,
-    spilledChars: content.length,
+    spilledChars,
     spillTruncated,
   };
 }
@@ -362,7 +364,12 @@ function normalizeContentType(value: string | null | undefined): string | undefi
   }
   const [raw] = value.split(";");
   const trimmed = raw?.trim();
-  return trimmed || undefined;
+  return trimmed ? trimmed.toLowerCase() : undefined;
+}
+
+function isJsonMediaType(value: string): boolean {
+  // Structured +json subtypes are single JSON documents; sequence formats are not.
+  return value === "application/json" || value.endsWith("+json");
 }
 
 type WebFetchRuntimeParams = {
@@ -426,7 +433,7 @@ function throwIfFetchAborted(signal: AbortSignal | undefined): void {
  * throw. Path and query whitespace is intentionally preserved — the WHATWG URL
  * parser percent-encodes those characters correctly per RFC 3986.
  */
-export function sanitizeWebFetchUrl(raw: string): string {
+function sanitizeWebFetchUrl(raw: string): string {
   let end = raw.length;
   while (end > 0 && raw.charCodeAt(end - 1) <= 0x20) {
     end -= 1;
@@ -434,6 +441,12 @@ export function sanitizeWebFetchUrl(raw: string): string {
   const trimmed = raw.slice(0, end).replace(/^\s+/, "");
   const repaired = trimmed.replace(/^(https?:\/\/)\s+/i, "$1");
   return repaired.replace(/^(https?:\/\/[^/?#\s]+)\s+$/i, "$1");
+}
+
+if (process.env.VITEST || process.env.NODE_ENV === "test") {
+  (globalThis as Record<PropertyKey, unknown>)[Symbol.for("openclaw.webFetchTestApi")] = {
+    sanitizeWebFetchUrl,
+  };
 }
 
 async function normalizeProviderWebFetchPayload(params: {
@@ -452,6 +465,10 @@ async function normalizeProviderWebFetchPayload(params: {
     params.maxChars,
     payload.truncated === true,
   );
+  const providerRawLength =
+    typeof payload.rawLength === "number" && Number.isFinite(payload.rawLength)
+      ? Math.max(0, Math.floor(payload.rawLength))
+      : wrapped.rawLength;
   const url = params.requestedUrl;
   const finalUrl = normalizeProviderFinalUrl(payload.finalUrl) ?? url;
   const status =
@@ -484,7 +501,7 @@ async function normalizeProviderWebFetchPayload(params: {
     },
     truncated: wrapped.truncated,
     length: wrapped.wrappedLength,
-    rawLength: wrapped.rawLength,
+    rawLength: providerRawLength,
     wrappedLength: wrapped.wrappedLength,
     ...(wrapped.fullOutputPath ? { fullOutputPath: wrapped.fullOutputPath } : {}),
     ...(wrapped.spilledChars !== undefined ? { spilledChars: wrapped.spilledChars } : {}),
@@ -643,19 +660,19 @@ async function runWebFetch(params: WebFetchRuntimeParams): Promise<Record<string
     throwIfFetchAborted(params.signal);
     const body = bodyResult.text;
     const responseTruncatedWarning = bodyResult.truncated
-      ? `Response body truncated after ${params.maxResponseBytes} bytes.`
+      ? `Response body incomplete after ${bodyResult.bytesRead} bytes.`
       : undefined;
 
     let title: string | undefined;
     let extractor = "raw";
     let text = body;
-    if (contentType.includes("text/markdown")) {
+    if (normalizedContentType === "text/markdown") {
       // Cloudflare Markdown for Agents: server returned pre-rendered markdown
       extractor = "cf-markdown";
       if (params.extractMode === "text") {
         text = markdownToText(body);
       }
-    } else if (contentType.includes("text/html")) {
+    } else if (normalizedContentType === "text/html") {
       if (params.readabilityEnabled) {
         const readable = await extractReadableContent({
           html: body,
@@ -712,7 +729,7 @@ async function runWebFetch(params: WebFetchRuntimeParams): Promise<Record<string
           "Web fetch extraction failed: Readability disabled and no fetch provider is available.",
         );
       }
-    } else if (contentType.includes("application/json")) {
+    } else if (isJsonMediaType(normalizedContentType)) {
       try {
         text = JSON.stringify(JSON.parse(body), null, 2);
         extractor = "json";
@@ -779,8 +796,7 @@ export function createWebFetchTool(options?: {
   const tool: AnyAgentTool = {
     label: "Web Fetch",
     name: "web_fetch",
-    description:
-      "Fetch URL and extract readable markdown/text. Lightweight page access; no browser automation.",
+    description: "Fetch URL; extract readable markdown/text. Lightweight; no browser automation.",
     parameters: WebFetchSchema,
     execute: async (_toolCallId, args, signal, onUpdate) => {
       const { config, preferRuntimeProviders, runtimeWebFetch } = resolveWebFetchToolRuntimeContext(
@@ -877,3 +893,4 @@ export function createWebFetchTool(options?: {
     formatWebFetchTerminalPresentation(result),
   );
 }
+/* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

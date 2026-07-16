@@ -22,7 +22,7 @@ type AnthropicOptions = ConstructorParameters<typeof Anthropic>[0];
 type MantleAnthropicStream = typeof stream;
 
 /** Resolve the Anthropic-compatible Mantle base URL from a provider base URL. */
-export function resolveMantleAnthropicBaseUrl(baseUrl: string): string {
+function resolveMantleAnthropicBaseUrl(baseUrl: string): string {
   const trimmed = baseUrl.replace(/\/+$/, "");
   if (trimmed.endsWith("/anthropic")) {
     return trimmed;
@@ -210,13 +210,18 @@ export function createMantleAnthropicStreamFn(deps?: {
       reasoning,
       options?.thinkingBudgets,
     );
+    const adaptiveThinking = requiresClaudeMythosAdaptiveThinking(model);
+    const thinkingEnabled = adaptiveThinking || adjusted.thinkingBudget >= 1024;
     return streamFn(model as Model<"anthropic-messages">, context, {
       ...base,
       client: streamClient,
       maxTokens: adjusted.maxTokens,
-      thinkingEnabled: true,
-      ...(requiresClaudeMythosAdaptiveThinking(model) ? { effort: reasoning } : {}),
-      thinkingBudgetTokens: adjusted.thinkingBudget,
+      thinkingEnabled,
+      ...(adaptiveThinking
+        ? { effort: reasoning }
+        : thinkingEnabled
+          ? { thinkingBudgetTokens: adjusted.thinkingBudget }
+          : {}),
     });
   };
 }

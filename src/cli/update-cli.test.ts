@@ -4,14 +4,15 @@ import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { expectDefined } from "@openclaw/normalization-core";
 import { Command } from "commander";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { writePackageDistInventory } from "../../scripts/lib/package-dist-inventory.ts";
 import { TEST_BUNDLED_RUNTIME_SIDECAR_PATHS } from "../../test/helpers/bundled-runtime-sidecars.js";
 import type { OpenClawConfig, ConfigFileSnapshot } from "../config/types.openclaw.js";
 import type { PluginInstallRecord } from "../config/types.plugins.js";
 import { GATEWAY_SERVICE_RUNTIME_PID_ENV } from "../daemon/constants.js";
 import type { ClawHubRiskAcknowledgementRequest } from "../infra/clawhub-install-trust.js";
-import { writePackageDistInventory } from "../infra/package-dist-inventory.js";
 import { isBetaTag } from "../infra/update-channels.js";
 import {
   createDeferredConfiguredPluginRepairDoctorResult,
@@ -167,7 +168,9 @@ vi.mock("../infra/update-check.js", () => ({
       return null;
     }
     for (let index = 0; index < a.length; index += 1) {
-      const diff = a[index] - b[index];
+      const diff =
+        expectDefined(a[index], "a[index] test invariant") -
+        expectDefined(b[index], "b[index] test invariant");
       if (diff !== 0) {
         return diff;
       }
@@ -225,6 +228,10 @@ vi.mock("node:child_process", async () => {
 
 vi.mock("../process/exec.js", () => ({
   runCommandWithTimeout: vi.fn(),
+  runExec: vi.fn(async () => ({
+    stdout: new Date(Date.now() - 1000).toString(),
+    stderr: "",
+  })),
 }));
 
 vi.mock("../utils.js", async (importOriginal) => {
@@ -416,7 +423,7 @@ const {
 } = await import("../infra/update-check.js");
 const { CONTROL_PLANE_UPDATE_SENTINEL_META_ENV } =
   await import("../infra/update-control-plane-sentinel.js");
-const { runCommandWithTimeout } = await import("../process/exec.js");
+const { runCommandWithTimeout, runExec } = await import("../process/exec.js");
 const { runDaemonRestart, runDaemonInstall } = await import("./daemon-cli.js");
 const { doctorCommand } = await import("../commands/doctor.js");
 const { defaultRuntime } = await import("../runtime.js");
@@ -540,11 +547,13 @@ describe("update-cli", () => {
     const [repo] = target.split("#", 1);
     const isGitHubShorthand =
       Boolean(repo) &&
-      !repo.startsWith(".") &&
-      !repo.startsWith("/") &&
-      !repo.startsWith("@") &&
-      repo.split("/").length === 2 &&
-      repo.split("/").every((part) => /^[^\s/:@]+$/u.test(part));
+      !expectDefined(repo, "repo test invariant").startsWith(".") &&
+      !expectDefined(repo, "repo test invariant").startsWith("/") &&
+      !expectDefined(repo, "repo test invariant").startsWith("@") &&
+      expectDefined(repo, "repo test invariant").split("/").length === 2 &&
+      expectDefined(repo, "repo test invariant")
+        .split("/")
+        .every((part) => /^[^\s/:@]+$/u.test(part));
     let isHttpGitUrl;
     try {
       const url = new URL(target);
@@ -696,11 +705,17 @@ describe("update-cli", () => {
     } else {
       expect(packagePackCommandCall()).toBeUndefined();
     }
+    const allowScriptsIdentity = isNpmGitPackageSpec(spec)
+      ? `./${path.basename(installSpec)}`
+      : spec.toLowerCase().startsWith("openclaw@")
+        ? "openclaw"
+        : spec;
     const call = packageInstallCommandCall();
     expect(call?.[0]).toEqual([
       "npm",
       "i",
       "-g",
+      `--allow-scripts=${allowScriptsIdentity}`,
       installSpec,
       "--no-fund",
       "--no-audit",
@@ -985,6 +1000,7 @@ describe("update-cli", () => {
       config: baseConfig,
       summary: {
         switchedToBundled: [],
+        switchedToClawHub: [],
         switchedToNpm: [],
         warnings: [],
         errors: [],
@@ -2032,6 +2048,7 @@ describe("update-cli", () => {
       config: baseConfig,
       summary: {
         switchedToBundled: [],
+        switchedToClawHub: [],
         switchedToNpm: [],
         warnings: [trustWarning],
         errors: [
@@ -2065,6 +2082,7 @@ describe("update-cli", () => {
           config: params.config,
           summary: {
             switchedToBundled: [],
+            switchedToClawHub: [],
             switchedToNpm: [],
             warnings: [trustWarning],
             errors: [
@@ -2150,6 +2168,7 @@ describe("update-cli", () => {
       config,
       summary: {
         switchedToBundled: [],
+        switchedToClawHub: [],
         switchedToNpm: [],
         warnings: [],
         errors: [],
@@ -4578,6 +4597,7 @@ describe("update-cli", () => {
         "npm",
         "i",
         "-g",
+        "--allow-scripts=openclaw",
         "openclaw@latest",
         "--no-fund",
         "--no-audit",
@@ -4588,6 +4608,7 @@ describe("update-cli", () => {
         "npm",
         "i",
         "-g",
+        "--allow-scripts=openclaw",
         "openclaw@latest",
         "--omit=optional",
         "--no-fund",
@@ -4838,7 +4859,7 @@ describe("update-cli", () => {
     expect(logs).toContain(`Managed gateway service Node: ${serviceNode}`);
   });
 
-  it("checks the managed service Node runtime before updating a redirected package root", async () => {
+  it("blocks a stale managed service Node before a no-restart package update", async () => {
     const shellRoot = createCaseDir("openclaw-shell-root");
     const serviceRoot = await createTrackedTempDir("openclaw-service-root-");
     const serviceNode = path.join(path.dirname(serviceRoot), "bin", "node");
@@ -4881,7 +4902,7 @@ describe("update-cli", () => {
     });
     nodeVersionSatisfiesEngine.mockReturnValue(false);
 
-    await updateCommand({ yes: true });
+    await updateCommand({ yes: true, restart: false });
 
     expect(nodeVersionSatisfiesEngine).toHaveBeenCalledWith("22.18.0", ">=22.19.0");
     expect(packageInstallCommandCall()).toBeUndefined();
@@ -5020,7 +5041,7 @@ describe("update-cli", () => {
     );
   });
 
-  it("uses the managed service Node for follow-up commands when roots match but nodes differ", async () => {
+  it("refreshes the managed service to current Node when its baked Node cannot run the target", async () => {
     const servicePrefix = await createTrackedTempDir("openclaw-service-prefix-");
     const nodeModules = path.join(servicePrefix, "lib", "node_modules");
     const root = path.join(nodeModules, "openclaw");
@@ -5045,6 +5066,14 @@ describe("update-cli", () => {
       programArguments: [serviceNode, entrypoint, "gateway"],
     });
     serviceLoaded.mockResolvedValue(true);
+    vi.mocked(fetchNpmPackageTargetStatus).mockResolvedValue({
+      target: "latest",
+      version: "2026.7.1",
+      nodeEngine: ">=24.15.0 <25",
+    });
+    nodeVersionSatisfiesEngine.mockImplementation(
+      (version: string | null) => version === "24.15.0",
+    );
     pathExists.mockImplementation(async (candidate: string) => {
       try {
         await fs.access(candidate);
@@ -5057,6 +5086,16 @@ describe("update-cli", () => {
       if (Array.isArray(argv) && argv[0] === serviceNode && argv[1] === "--version") {
         return {
           stdout: "v24.14.0\n",
+          stderr: "",
+          code: 0,
+          signal: null,
+          killed: false,
+          termination: "exit",
+        };
+      }
+      if (Array.isArray(argv) && argv[0] === process.execPath && argv[1] === "--version") {
+        return {
+          stdout: "v24.15.0\n",
           stderr: "",
           code: 0,
           signal: null,
@@ -5112,13 +5151,20 @@ describe("update-cli", () => {
 
     await updateCommand({ yes: true });
 
-    // Follow-up commands should use the service Node, not process.execPath.
-    expect(doctorCommandCall()?.[0][0]).toBe(serviceNode);
-    expect(spawnCall()?.[0]).toBe(serviceNode);
+    expect(nodeVersionSatisfiesEngine).toHaveBeenCalledWith("24.14.0", ">=24.15.0 <25");
+    expect(nodeVersionSatisfiesEngine).toHaveBeenCalledWith("24.15.0", ">=24.15.0 <25");
+    expect(doctorCommandCall()?.[0][0]).toBe(process.execPath);
+    expect(spawnCall()?.[0]).toBe(process.execPath);
     const serviceInstallCall = commandCalls().find(
       ([argv]) => argv[2] === "gateway" && argv[3] === "install",
     );
-    expect(serviceInstallCall?.[0][0]).toBe(serviceNode);
+    expect(serviceInstallCall?.[0][0]).toBe(process.execPath);
+    const logs = vi
+      .mocked(defaultRuntime.log)
+      .mock.calls.map((call) => String(call[0]))
+      .join("\n");
+    expect(logs).toContain(`Managed gateway service Node (${serviceNode}) cannot run`);
+    expect(logs).toContain(`Using current Node (${process.execPath})`);
   });
 
   it("pins package install to the service root when nodes differ and no owning npm exists at the prefix", async () => {
@@ -5479,6 +5525,7 @@ describe("update-cli", () => {
       config,
       summary: {
         switchedToBundled: [],
+        switchedToClawHub: [],
         switchedToNpm: [],
         warnings: [],
         errors: [],
@@ -5530,6 +5577,7 @@ describe("update-cli", () => {
       },
       summary: {
         switchedToBundled: [],
+        switchedToClawHub: [],
         switchedToNpm: [],
         warnings: [],
         errors: [],
@@ -5591,6 +5639,7 @@ describe("update-cli", () => {
       config,
       summary: {
         switchedToBundled: [],
+        switchedToClawHub: [],
         switchedToNpm: [],
         warnings: [],
         errors: [],
@@ -5682,6 +5731,7 @@ describe("update-cli", () => {
       config,
       summary: {
         switchedToBundled: [],
+        switchedToClawHub: [],
         switchedToNpm: [],
         warnings: [],
         errors: [],
@@ -5769,6 +5819,7 @@ describe("update-cli", () => {
       config,
       summary: {
         switchedToBundled: [],
+        switchedToClawHub: [],
         switchedToNpm: [],
         warnings: [],
         errors: [],
@@ -5835,6 +5886,7 @@ describe("update-cli", () => {
       config,
       summary: {
         switchedToBundled: [],
+        switchedToClawHub: [],
         switchedToNpm: [],
         warnings: [],
         errors: [],
@@ -5893,6 +5945,7 @@ describe("update-cli", () => {
       config,
       summary: {
         switchedToBundled: [],
+        switchedToClawHub: [],
         switchedToNpm: [],
         warnings: [],
         errors: [],
@@ -5903,15 +5956,13 @@ describe("update-cli", () => {
       config,
       outcomes: [],
     }));
-    execFile.mockImplementationOnce((...args: unknown[]) => {
-      const [file, commandArgs] = args;
+    vi.mocked(runExec).mockImplementationOnce(async (file, commandArgs) => {
       expect(file).toBe("powershell.exe");
       expect(commandArgs).toContain("-NonInteractive");
-      const callback = args.at(-1);
-      if (typeof callback === "function") {
-        callback(null, new Date(Date.now() - 1_000).toISOString(), "");
-      }
-      return new EventEmitter();
+      return {
+        stdout: new Date(Date.now() - 1_000).toISOString(),
+        stderr: "",
+      };
     });
     const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform");
     Object.defineProperty(process, "platform", {
@@ -5974,6 +6025,7 @@ describe("update-cli", () => {
       config,
       summary: {
         switchedToBundled: [],
+        switchedToClawHub: [],
         switchedToNpm: [],
         warnings: [],
         errors: [],
@@ -5984,13 +6036,7 @@ describe("update-cli", () => {
       config,
       outcomes: [],
     }));
-    execFile.mockImplementationOnce((...args: unknown[]) => {
-      const callback = args.at(-1);
-      if (typeof callback === "function") {
-        callback(new Error("ps unavailable"), "", "");
-      }
-      return new EventEmitter();
-    });
+    vi.mocked(runExec).mockRejectedValueOnce(new Error("ps unavailable"));
 
     await withEnvAsync(
       {
@@ -6052,6 +6098,7 @@ describe("update-cli", () => {
       config,
       summary: {
         switchedToBundled: [],
+        switchedToClawHub: [],
         switchedToNpm: [],
         warnings: [],
         errors: [],
@@ -6124,6 +6171,7 @@ describe("update-cli", () => {
       config,
       summary: {
         switchedToBundled: [],
+        switchedToClawHub: [],
         switchedToNpm: [],
         warnings: [],
         errors: [],
@@ -6191,6 +6239,7 @@ describe("update-cli", () => {
       config,
       summary: {
         switchedToBundled: [],
+        switchedToClawHub: [],
         switchedToNpm: [],
         warnings: [],
         errors: [],
@@ -6253,6 +6302,7 @@ describe("update-cli", () => {
       config: sourceConfig,
       summary: {
         switchedToBundled: [],
+        switchedToClawHub: [],
         switchedToNpm: [],
         warnings: [],
         errors: [],
@@ -6513,6 +6563,7 @@ describe("update-cli", () => {
       config,
       summary: {
         switchedToBundled: [],
+        switchedToClawHub: [],
         switchedToNpm: [],
         warnings: [],
         errors: [],
@@ -6912,7 +6963,7 @@ describe("update-cli", () => {
       url: "ws://127.0.0.1:18789",
     });
 
-    await updateCommand({ yes: true, json: true });
+    await updateCommand({ yes: true, json: true, timeout: "123" });
 
     expect(runRestartScript).not.toHaveBeenCalled();
     expect(runDaemonRestart).not.toHaveBeenCalled();
@@ -6920,7 +6971,7 @@ describe("update-cli", () => {
     expect(restartCall?.[0][0]).toContain("node");
     expect(restartCall?.[0].slice(1)).toEqual([updatedEntrypoint, "gateway", "restart", "--json"]);
     expect(restartCall?.[1].cwd).toBe(updatedRoot);
-    expect(restartCall?.[1].timeoutMs).toBe(60_000);
+    expect(restartCall?.[1].timeoutMs).toBe(123_000);
     const probeCall = probeGatewayCall() as { includeDetails?: boolean } | undefined;
     expect(probeCall?.includeDetails).toBe(true);
     expect(defaultRuntime.exit).toHaveBeenCalledWith(1);
@@ -7406,6 +7457,7 @@ describe("update-cli", () => {
           nonInteractive: true,
           repair: true,
           yes: true,
+          crossStateDirImports: false,
         });
         expect(syncPluginCall()?.channel).toBe("stable");
         expect(syncPluginCall()?.acknowledgeClawHubRisk).toBe(true);
@@ -7492,6 +7544,7 @@ describe("update-cli", () => {
         config: params.config ?? baseConfig,
         summary: {
           switchedToBundled: [],
+          switchedToClawHub: [],
           switchedToNpm: [],
           warnings: [],
           errors: [],
@@ -7505,6 +7558,7 @@ describe("update-cli", () => {
       nonInteractive: true,
       repair: true,
       yes: false,
+      crossStateDirImports: false,
     });
     expect(syncPluginCall()?.channel).toBe("beta");
     expect(syncPluginCall()?.config).toEqual({
@@ -7804,3 +7858,4 @@ describe("update-cli", () => {
     ]);
   });
 });
+/* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

@@ -2,7 +2,8 @@
 import { BedrockRuntimeClient, ConversationRole } from "@aws-sdk/client-bedrock-runtime";
 import { onLlmRequestActivity } from "openclaw/plugin-sdk/provider-stream-shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { streamBedrock, streamSimpleBedrock, testing } from "./stream.runtime.js";
+import { streamBedrock, streamSimpleBedrock } from "./stream.runtime.js";
+import { streamTesting as testing } from "./test-support.js";
 
 function bedrockModel(overrides: Record<string, unknown>) {
   return {
@@ -49,6 +50,44 @@ async function* streamEvents(events: unknown[]) {
 
 afterEach(() => {
   vi.restoreAllMocks();
+});
+
+describe("Bedrock tool-result replay", () => {
+  it("drops payload-less image husks from consecutive tool results", () => {
+    const messages = testing.convertMessages(
+      {
+        messages: [
+          {
+            role: "toolResult",
+            toolCallId: "call_husk",
+            toolName: "screenshot",
+            content: [{ type: "image", mimeType: "image/png", data: "" }],
+            isError: false,
+          },
+          {
+            role: "toolResult",
+            toolCallId: "call_text",
+            toolName: "read",
+            content: [{ type: "text", text: "actual tool output" }],
+            isError: false,
+          },
+        ],
+      } as never,
+      bedrockModel({ input: ["text", "image"] }),
+      "none",
+    );
+
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({
+      role: ConversationRole.USER,
+      content: [
+        { toolResult: { toolUseId: "call_husk", content: [{ text: "(no output)" }] } },
+        { toolResult: { toolUseId: "call_text", content: [{ text: "actual tool output" }] } },
+      ],
+    });
+    expect(JSON.stringify(messages)).not.toContain('"image"');
+    expect(JSON.stringify(messages)).not.toContain("see attached image");
+  });
 });
 
 describe("Bedrock reasoning replay", () => {
@@ -203,6 +242,24 @@ describe("Bedrock thinking effort mapping", () => {
     expect(options.reasoning).toBeUndefined();
     expect(testing.buildAdditionalModelRequestFields(model, options)).toBeUndefined();
   });
+
+  it.each([
+    { reasoning: "minimal" as const, maxTokens: 1024 },
+    { reasoning: "low" as const, maxTokens: 1500 },
+  ])(
+    "disables legacy thinking when $reasoning exceeds the $maxTokens token cap",
+    ({ reasoning, maxTokens }) => {
+      const model = bedrockModel({
+        id: "anthropic.claude-haiku-4-5-v1:0",
+        name: "Claude Haiku 4.5",
+        maxTokens,
+      });
+      const options = testing.resolveSimpleBedrockOptions(model, { reasoning });
+
+      expect(options).toMatchObject({ maxTokens, reasoning: "off" });
+      expect(testing.buildAdditionalModelRequestFields(model, options)).toBeUndefined();
+    },
+  );
 
   it("uses the model maxTokens cap for adaptive Claude thinking requests", () => {
     const model = bedrockModel({

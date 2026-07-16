@@ -1,5 +1,5 @@
 // Memory Host SDK module implements multimodal behavior.
-import { normalizeLowercaseStringOrEmpty } from "./string-utils.js";
+import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
 
 // Multimodal memory settings and file classification helpers.
 
@@ -31,7 +31,7 @@ export type MemoryMultimodalSettings = {
 };
 
 /** Default max bytes for one multimodal memory file. */
-export const DEFAULT_MEMORY_MULTIMODAL_MAX_FILE_BYTES = 10 * 1024 * 1024;
+const DEFAULT_MEMORY_MULTIMODAL_MAX_FILE_BYTES = 10 * 1024 * 1024;
 
 /** Normalize user modality selections to supported modalities. */
 function normalizeMemoryMultimodalModalities(

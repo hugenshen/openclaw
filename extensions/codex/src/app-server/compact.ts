@@ -7,13 +7,10 @@ import {
   type CompactEmbeddedAgentSessionParams,
   type EmbeddedAgentCompactResult,
 } from "openclaw/plugin-sdk/agent-harness-runtime";
+import { resolveAgentDir, resolveDefaultAgentId } from "openclaw/plugin-sdk/agent-runtime";
 import { readCodexNotificationItem } from "./attempt-notifications.js";
-import {
-  defaultLeasedCodexAppServerClientFactory,
-  type CodexAppServerClientFactory,
-} from "./client-factory.js";
+import { resolveCodexBindingAppServerConnection } from "./binding-connection.js";
 import { CodexAppServerRpcError, type CodexAppServerClient } from "./client.js";
-import { resolveCodexAppServerRuntimeOptions } from "./config.js";
 import {
   readCodexNotificationThreadId,
   readCodexNotificationTurnId,
@@ -27,7 +24,11 @@ import {
   type CodexAppServerBindingStore,
   type CodexAppServerThreadBinding,
 } from "./session-binding.js";
-import { releaseLeasedSharedCodexAppServerClient } from "./shared-client.js";
+import {
+  getLeasedSharedCodexAppServerClient,
+  releaseLeasedSharedCodexAppServerClient,
+  type CodexAppServerClientFactory,
+} from "./shared-client.js";
 
 const warnedIgnoredCompactionOverrides = new Set<string>();
 const codexNativeCompactionQueues = new Map<string, Promise<void>>();
@@ -504,7 +505,6 @@ async function compactCodexNativeThread(
   if (nativeExecutionBlock) {
     return { ok: false, compacted: false, reason: nativeExecutionBlock };
   }
-  const appServer = resolveCodexAppServerRuntimeOptions({ pluginConfig: options.pluginConfig });
   const bindingIdentity: CodexAppServerBindingIdentity = sessionBindingIdentity({
     sessionId: params.sessionId,
     sessionKey: params.sessionKey,
@@ -520,7 +520,30 @@ async function compactCodexNativeThread(
   }
   let binding = initialBinding;
   const requestedAuthProfileId = params.authProfileId?.trim() || undefined;
+  let connection: ReturnType<typeof resolveCodexBindingAppServerConnection>;
+  try {
+    const config = params.config ?? {};
+    const agentId =
+      params.agentId ??
+      readAgentIdFromSessionKey(params.sessionKey) ??
+      resolveDefaultAgentId(config);
+    connection = resolveCodexBindingAppServerConnection({
+      binding,
+      authProfileId: requestedAuthProfileId ?? binding.authProfileId,
+      pluginConfig: options.pluginConfig,
+      config,
+      agentDir: resolveAgentDir(config, agentId),
+    });
+  } catch (error) {
+    return {
+      ok: false,
+      compacted: false,
+      reason: formatCompactionError(error),
+    };
+  }
+  const { appServer, usesSupervisionConnection } = connection;
   if (
+    !usesSupervisionConnection &&
     requestedAuthProfileId &&
     binding.authProfileId &&
     binding.authProfileId !== requestedAuthProfileId
@@ -530,18 +553,31 @@ async function compactCodexNativeThread(
     return { ok: false, compacted: false, reason: "auth profile mismatch for session binding" };
   }
   const shouldReleaseDefaultLease = !options.clientFactory;
-  const clientFactory = options.clientFactory ?? defaultLeasedCodexAppServerClientFactory;
+  const clientFactory = options.clientFactory ?? getLeasedSharedCodexAppServerClient;
+  const runtimeAuthPlan = params.runtimeAuthPlan ?? params.runtimePlan?.auth;
+  const usesPreparedApiKey =
+    !usesSupervisionConnection && runtimeAuthPlan?.modelRoute?.authRequirement === "api-key";
+  const preparedApiKey = usesPreparedApiKey ? params.resolvedApiKey?.trim() : undefined;
+  if (usesPreparedApiKey && !preparedApiKey) {
+    return {
+      ok: false,
+      compacted: false,
+      reason: "Prepared Codex Platform compaction route is missing its resolved API key.",
+    };
+  }
   try {
     return await runExclusiveCodexNativeCompaction(
       binding.threadId,
       params.abortSignal,
       async () => {
-        const client = await clientFactory(
-          appServer.start,
-          requestedAuthProfileId ?? binding.authProfileId,
-          params.agentDir,
-          params.config,
-        );
+        const client = await clientFactory({
+          startOptions: appServer.start,
+          ...(preparedApiKey
+            ? { preparedAuth: { kind: "api-key" as const, apiKey: preparedApiKey } }
+            : { authProfileId: connection.clientAuthProfileId }),
+          agentDir: params.agentDir,
+          config: params.config,
+        });
         const completionWatch = watchCodexNativeCompactionCompletion({
           client,
           threadId: binding.threadId,
@@ -561,6 +597,12 @@ async function compactCodexNativeThread(
               // A local thread remains runnable with its stdio process. Keep
               // the lifecycle fence held unless process exit is observed.
               throw new Error("failed to stop unconfirmed codex app-server process");
+            }
+            if (usesSupervisionConnection) {
+              // A supervised thread is native user-home state, not an
+              // OpenClaw-owned remote binding. Keep the lifecycle fence held
+              // rather than detach and permit a second writer.
+              throw new Error("cannot detach an unconfirmed supervised codex thread");
             }
             // Closing a WebSocket proves only that the connection ended, not
             // that its remote turn stopped. Detach this exact thread before
@@ -863,6 +905,13 @@ function isSameNativeCompactionBinding(
 }
 
 function isCodexThreadNotFoundError(error: unknown): boolean {
+  // codex-rs exposes no dedicated error code for a missing compaction thread:
+  // thread/compact/start returns generic INVALID_REQUEST (-32600), and the
+  // app-server's own contract/test asserts the "thread not found" MESSAGE as
+  // the discriminator (thread_processor.rs load_thread → invalid_request;
+  // compaction.rs asserts message.contains("thread not found")). So the message
+  // is the authoritative positive signal here, not the generic code. This is a
+  // self-heal recovery gate, not user-facing classification.
   return formatCompactionError(error).toLowerCase().includes("thread not found");
 }
 
@@ -872,3 +921,4 @@ function formatCompactionError(error: unknown): string {
   }
   return String(error);
 }
+/* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

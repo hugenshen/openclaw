@@ -44,6 +44,19 @@ export function sleep(ms: number) {
   });
 }
 
+/** Milliseconds left before an absolute deadline. May be zero or negative. */
+export function remainingMs(deadline: number, now = Date.now()): number {
+  return deadline - now;
+}
+
+/**
+ * Caps a per-attempt timeout to the remaining deadline budget.
+ * Callers must check remainingMs(deadline) > 0 before starting work that needs a timeout.
+ */
+export function clampTimeoutMs(deadline: number, maxMs: number, now = Date.now()): number {
+  return Math.max(1, Math.min(maxMs, deadline - now));
+}
+
 export function toLintErrorObject(value: unknown, fallbackMessage: string): Error {
   if (value instanceof Error) {
     return value;

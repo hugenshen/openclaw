@@ -43,7 +43,7 @@ import {
 } from "./network-smokes.ts";
 import { registerActiveChildProcessTree, runCommand, withAllocatedGatewayPort } from "./process.ts";
 import { logLanePhase } from "./reporting.ts";
-import { formatError, sleep } from "./shared.ts";
+import { clampTimeoutMs, formatError, remainingMs, sleep } from "./shared.ts";
 
 export async function runOpenClaw(params: {
   lane: LaneState;
@@ -340,11 +340,13 @@ export async function runDashboardSmoke(params: Pick<LaneCommandParams, "lane" |
   const deadline = Date.now() + CROSS_OS_DASHBOARD_SMOKE_TIMEOUT_MS;
   let attempt = 0;
   try {
-    while (Date.now() < deadline) {
+    while (remainingMs(deadline) > 0) {
       attempt += 1;
       logStream.write(`${new Date().toISOString()} attempt=${attempt} url=${dashboardUrl}\n`);
       try {
-        const signal = AbortSignal.timeout(CROSS_OS_DASHBOARD_FETCH_TIMEOUT_MS);
+        const signal = AbortSignal.timeout(
+          clampTimeoutMs(deadline, CROSS_OS_DASHBOARD_FETCH_TIMEOUT_MS),
+        );
         const response = await fetch(dashboardUrl, {
           signal,
         });
@@ -352,7 +354,7 @@ export async function runDashboardSmoke(params: Pick<LaneCommandParams, "lane" |
         const markers = dashboardHtmlMarkerStatus(html);
         const assetUrls = resolveDashboardAssetUrls(dashboardUrl, html);
         if (response.ok && markers.ready) {
-          const assets = await verifyDashboardAssetUrls(assetUrls);
+          const assets = await verifyDashboardAssetUrls(assetUrls, fetch, { deadline });
           if (assets.ok) {
             logStream.write(
               `${new Date().toISOString()} dashboard-ready status=${response.status} assets=${assetUrls.length}\n`,
@@ -371,7 +373,10 @@ export async function runDashboardSmoke(params: Pick<LaneCommandParams, "lane" |
           `${new Date().toISOString()} dashboard-fetch-error ${formatError(error)}\n`,
         );
       }
-      await sleep(1_000);
+      if (remainingMs(deadline) <= 0) {
+        break;
+      }
+      await sleep(clampTimeoutMs(deadline, 1_000));
     }
   } finally {
     logStream.end();

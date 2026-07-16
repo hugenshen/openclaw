@@ -16,7 +16,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve as resolvePath, win32 } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   agentOutputHasExpectedOkMarker,
   agentTurnUsedEmbeddedFallback,
@@ -36,6 +36,7 @@ import {
   buildInstallerSmokeScript,
   buildWindowsPathBootstrapScript,
   canConnectToLoopbackPort,
+  clampTimeoutMs,
   buildDiscordSmokeGuildsConfig,
   buildRealUpdateEnv,
   dashboardHtmlMarkerStatus,
@@ -53,6 +54,7 @@ import {
   CROSS_OS_AGENT_TURN_TIMEOUT_SECONDS,
   CROSS_OS_COMMAND_HEARTBEAT_SECONDS,
   deleteDiscordMessage,
+  remainingMs,
   isImmutableReleaseRef,
   isRecoverableWindowsPackagedUpgradeSwapCleanupFailure,
   isRecoverableWindowsPackagedUpgradeTimeoutError,
@@ -266,6 +268,51 @@ describe("scripts/openclaw-cross-os-release-checks", () => {
 
     expect(result.ok).toBe(false);
     expect(result.failures).toEqual(["http://127.0.0.1:18789/assets/index.js status=404"]);
+  });
+
+  it("clamps per-attempt timeouts to the remaining deadline budget", () => {
+    const now = 1_000_000;
+    expect(remainingMs(now + 250, now)).toBe(250);
+    expect(remainingMs(now - 1, now)).toBe(-1);
+    expect(clampTimeoutMs(now + 250, CROSS_OS_DASHBOARD_FETCH_TIMEOUT_MS, now)).toBe(250);
+    expect(clampTimeoutMs(now + 60_000, CROSS_OS_DASHBOARD_FETCH_TIMEOUT_MS, now)).toBe(
+      CROSS_OS_DASHBOARD_FETCH_TIMEOUT_MS,
+    );
+    expect(clampTimeoutMs(now + 1, 2_000, now)).toBe(1);
+  });
+
+  it("clamps dashboard asset AbortSignal.timeout to remaining deadline on last iteration", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000_000);
+    const timeoutSpy = vi.spyOn(AbortSignal, "timeout");
+    try {
+      const deadline = Date.now() + 250;
+      const result = await verifyDashboardAssetUrls(
+        ["http://127.0.0.1:18789/assets/index.css"],
+        async () => new Response("", { status: 200 }),
+        { deadline },
+      );
+
+      expect(result.ok).toBe(true);
+      expect(timeoutSpy).toHaveBeenCalledWith(250);
+      expect(timeoutSpy.mock.calls.every(([ms]) => (ms as number) <= 250)).toBe(true);
+    } finally {
+      timeoutSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it("stops dashboard asset verification when the deadline is already exhausted", async () => {
+    const fetchAsset = vi.fn(async () => new Response("", { status: 200 }));
+    const result = await verifyDashboardAssetUrls(
+      ["http://127.0.0.1:18789/assets/index.css", "http://127.0.0.1:18789/assets/index.js"],
+      fetchAsset,
+      { deadline: Date.now() - 1 },
+    );
+
+    expect(fetchAsset).not.toHaveBeenCalled();
+    expect(result.ok).toBe(false);
+    expect(result.failures).toEqual(["http://127.0.0.1:18789/assets/index.css deadline exceeded"]);
   });
 
   it("keeps gateway RPC status probes patient enough for live release startup", () => {

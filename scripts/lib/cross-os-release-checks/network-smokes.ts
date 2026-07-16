@@ -14,7 +14,7 @@ import {
   waitForInstalledGateway,
 } from "./installed.ts";
 import { stopGateway } from "./process.ts";
-import { formatError, sleep } from "./shared.ts";
+import { clampTimeoutMs, formatError, remainingMs, sleep } from "./shared.ts";
 
 export function buildCrossOsDiscordRoundtripNonces() {
   return {
@@ -236,16 +236,36 @@ export function resolveDashboardAssetUrls(dashboardUrl: string, html: string): s
 export async function verifyDashboardAssetUrls(
   assetUrls: string[],
   fetchAsset: typeof fetch = fetch,
+  options: { deadline?: number; signal?: AbortSignal } = {},
 ): Promise<{ failures: string[]; ok: boolean }> {
   if (assetUrls.length === 0) {
     return { failures: ["no dashboard asset URLs found"], ok: false };
   }
   const failures: string[] = [];
   for (const assetUrl of assetUrls) {
+    if (options.deadline != null && remainingMs(options.deadline) <= 0) {
+      failures.push(`${assetUrl} deadline exceeded`);
+      break;
+    }
     try {
-      const response = await fetchAsset(assetUrl, {
-        signal: AbortSignal.timeout(CROSS_OS_DASHBOARD_FETCH_TIMEOUT_MS),
-      });
+      // Prefer an explicit caller signal; otherwise clamp AbortSignal.timeout to the
+      // remaining smoke deadline so the last asset fetch cannot overrun the budget.
+      let signal = options.signal;
+      if (!signal) {
+        const timeoutMs =
+          options.deadline != null
+            ? clampTimeoutMs(options.deadline, CROSS_OS_DASHBOARD_FETCH_TIMEOUT_MS)
+            : CROSS_OS_DASHBOARD_FETCH_TIMEOUT_MS;
+        signal = AbortSignal.timeout(timeoutMs);
+      } else if (options.deadline != null) {
+        signal = AbortSignal.any([
+          signal,
+          AbortSignal.timeout(
+            clampTimeoutMs(options.deadline, CROSS_OS_DASHBOARD_FETCH_TIMEOUT_MS),
+          ),
+        ]);
+      }
+      const response = await fetchAsset(assetUrl, { signal });
       await response.body?.cancel().catch(() => undefined);
       if (!response.ok) {
         failures.push(`${assetUrl} status=${response.status}`);
@@ -259,28 +279,39 @@ export async function verifyDashboardAssetUrls(
 
 async function waitForDiscordMessage(params: { token: string; channelId: string; needle: string }) {
   const deadline = Date.now() + 3 * 60 * 1000;
-  while (Date.now() < deadline) {
+  while (remainingMs(deadline) > 0) {
     let response;
     let text;
     try {
-      const init = buildDiscordFetchInit(params.token);
+      const init = buildDiscordFetchInit(params.token, {
+        signal: AbortSignal.timeout(clampTimeoutMs(deadline, CROSS_OS_DISCORD_FETCH_TIMEOUT_MS)),
+      });
       response = await fetch(
         `https://discord.com/api/v10/channels/${params.channelId}/messages?limit=20`,
         init,
       );
       text = await readBoundedCrossOsResponseText(response, undefined, { signal: init.signal });
     } catch {
-      await sleep(2_000);
+      if (remainingMs(deadline) <= 0) {
+        break;
+      }
+      await sleep(clampTimeoutMs(deadline, 2_000));
       continue;
     }
     if (!response.ok) {
-      await sleep(2_000);
+      if (remainingMs(deadline) <= 0) {
+        break;
+      }
+      await sleep(clampTimeoutMs(deadline, 2_000));
       continue;
     }
     if (text.includes(params.needle)) {
       return;
     }
-    await sleep(2_000);
+    if (remainingMs(deadline) <= 0) {
+      break;
+    }
+    await sleep(clampTimeoutMs(deadline, 2_000));
   }
   throw new Error(`Discord host-side visibility check timed out for ${params.needle}.`);
 }
@@ -359,7 +390,7 @@ async function waitForInstalledDiscordReadback(params: {
   needle: string;
 }) {
   const deadline = Date.now() + 3 * 60 * 1000;
-  while (Date.now() < deadline) {
+  while (remainingMs(deadline) > 0) {
     const response = await runInstalledCli({
       cliPath: params.cliPath,
       args: [
@@ -376,13 +407,16 @@ async function waitForInstalledDiscordReadback(params: {
       cwd: params.cwd,
       env: params.env,
       logPath: params.logPath,
-      timeoutMs: 60_000,
+      timeoutMs: clampTimeoutMs(deadline, 60_000),
       check: false,
     });
     if (response.exitCode === 0 && response.stdout.includes(params.needle)) {
       return;
     }
-    await sleep(3_000);
+    if (remainingMs(deadline) <= 0) {
+      break;
+    }
+    await sleep(clampTimeoutMs(deadline, 3_000));
   }
   throw new Error(`Discord guest readback timed out for ${params.needle}.`);
 }

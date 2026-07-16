@@ -1905,7 +1905,7 @@ jobs:
               }'
           )"
 
-          if ! curl --fail-with-body \
+          if ! curl --fail-with-body --connect-timeout 10 --max-time 30 \
             -X POST \
             -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer ${RELEASES_DISPATCH_TOKEN}" \

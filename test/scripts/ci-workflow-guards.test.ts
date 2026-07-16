@@ -1527,6 +1527,9 @@ describe("ci workflow guards", () => {
     );
     expect(cacheStep.with?.key).toContain(`platform-${appCompileSdk}.0-`);
     expect(installStep.run).toContain(`"${packageId}"`);
+    expect(installStep.run).toContain(
+      'yes | sdkmanager --sdk_root="${ANDROID_SDK_ROOT}" --licenses >/dev/null || [[ "${PIPESTATUS[1]}" -eq 0 ]]',
+    );
   });
 
   it("loads Android CI setup from the workflow revision for frozen targets", () => {
@@ -1983,17 +1986,29 @@ describe("ci workflow guards", () => {
     }
   });
 
-  it("bounds the workflow sanity ShellCheck download", () => {
+  it("bounds the workflow sanity tool downloads", () => {
     const workflow = readWorkflowSanityWorkflow();
-    const installStep = expectDefined(
+    const shellcheckStep = expectDefined(
       workflow.jobs.actionlint.steps.find(
         (step: WorkflowStep) => step.name === "Install ShellCheck",
       ),
       "ShellCheck install step",
     );
+    const actionlintStep = expectDefined(
+      workflow.jobs.actionlint.steps.find(
+        (step: WorkflowStep) => step.name === "Install actionlint",
+      ),
+      "actionlint install step",
+    );
 
-    expect(installStep.run).toContain("curl --connect-timeout 10 --max-time 120");
-    expect(installStep.run).toContain("--retry 5 --retry-delay 2 --retry-all-errors");
+    expect(shellcheckStep.run).toContain("curl --connect-timeout 10 --max-time 120");
+    expect(shellcheckStep.run).toContain("--retry 5 --retry-delay 2 --retry-all-errors");
+    expect(actionlintStep.run).toContain("--connect-timeout 10");
+    expect(actionlintStep.run).toContain("--max-time 120");
+    expect(actionlintStep.run).toContain("--retry 5");
+    expect(actionlintStep.run).toContain("--retry-delay 2");
+    expect(actionlintStep.run).toContain("--retry-all-errors");
+    expect(actionlintStep.run.match(/curl "\$\{curl_args\[@\]\}"/gu)).toHaveLength(2);
   });
 
   it("runs generated baseline drift checks in workflow sanity", () => {
@@ -3864,6 +3879,24 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
     );
     expect(rawSocketQuery).not.toContain(
       'call.getFile().getRelativePath() = "extensions/codex/src/app-server/transport-websocket.ts"',
+    );
+  });
+
+  it("bounds full release validation dispatch curl POST with connection and transfer deadlines", () => {
+    const workflow = readFileSync(".github/workflows/full-release-validation.yml", "utf8");
+    // Workflow curl is backslash-continued across several physical lines. Match
+    // the full command block (not a single physical line) before asserting the
+    // connect/transfer deadlines and the warning fallback path.
+    const dispatchBlock =
+      workflow.match(
+        /curl --fail-with-body[\s\S]*?repos\/openclaw\/releases\/dispatches[\s\S]*?-d "\$payload"/u,
+      )?.[0] ?? "";
+
+    expect(dispatchBlock).toContain("--connect-timeout 10");
+    expect(dispatchBlock).toContain("--max-time 30");
+    expect(dispatchBlock).toContain("repos/openclaw/releases/dispatches");
+    expect(workflow).toContain(
+      "::warning::Automatic release evidence dispatch failed; child workflow validation remains authoritative.",
     );
   });
 });

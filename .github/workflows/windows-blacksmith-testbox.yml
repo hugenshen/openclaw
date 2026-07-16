@@ -90,7 +90,7 @@ jobs:
               metadata: {}
             }' > "$hydrating_body"
 
-          hydrating_http_code="$(curl -sS -L --post302 --post303 -o "$hydrating_response" -w '%{http_code}' \
+          hydrating_http_code="$(curl -sS --connect-timeout 10 --max-time 30 -L --post302 --post303 -o "$hydrating_response" -w '%{http_code}' \
             -X POST "${api_url}/api/testbox/phone-home" \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer ${auth_token}" \
@@ -193,7 +193,7 @@ jobs:
               metadata: {}
             }' > "$ready_body"
 
-          http_code="$(curl -sS -L --post302 --post303 -o "$RUNNER_TEMP/testbox-ready.response" -w '%{http_code}' \
+          http_code="$(curl -sS --connect-timeout 10 --max-time 30 -L --post302 --post303 -o "$RUNNER_TEMP/testbox-ready.response" -w '%{http_code}' \
             -X POST "${api_url}/api/testbox/phone-home" \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer ${auth_token}" \

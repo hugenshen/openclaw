@@ -3881,4 +3881,22 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
       'call.getFile().getRelativePath() = "extensions/codex/src/app-server/transport-websocket.ts"',
     );
   });
+
+  it("bounds full release validation dispatch curl POST with connection and transfer deadlines", () => {
+    const workflow = readFileSync(".github/workflows/full-release-validation.yml", "utf8");
+    // Workflow curl is backslash-continued across several physical lines. Match
+    // the full command block (not a single physical line) before asserting the
+    // connect/transfer deadlines and the warning fallback path.
+    const dispatchBlock =
+      workflow.match(
+        /curl --fail-with-body[\s\S]*?repos\/openclaw\/releases\/dispatches[\s\S]*?-d "\$payload"/u,
+      )?.[0] ?? "";
+
+    expect(dispatchBlock).toContain("--connect-timeout 10");
+    expect(dispatchBlock).toContain("--max-time 30");
+    expect(dispatchBlock).toContain("repos/openclaw/releases/dispatches");
+    expect(workflow).toContain(
+      "::warning::Automatic release evidence dispatch failed; child workflow validation remains authoritative.",
+    );
+  });
 });

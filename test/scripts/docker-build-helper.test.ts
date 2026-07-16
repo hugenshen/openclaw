@@ -11,7 +11,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import path, { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
@@ -3806,6 +3806,10 @@ heartbeat_elapsed="\${BASH_REMATCH[1]}"
     const composeRunner = readFileSync(COMPOSE_SETUP_E2E_PATH, "utf8");
     expect(composeRunner).not.toMatch(/(^|\n)\s*docker rm -f "\$CLI_NAME"/u);
     expect(composeRunner).toContain('docker_e2e_docker_cmd rm -f "$CLI_NAME"');
+    expect(composeRunner).toContain("compose_e2e_cmd");
+    expect(composeRunner).toContain("docker_e2e_docker_cmd inspect");
+    expect(composeRunner).not.toMatch(/(^|\n)\s*docker inspect /u);
+    expect(composeRunner).not.toMatch(/\$\{COMPOSE\[@\]\}/u);
 
     const packageRunner = readFileSync(DOCKER_PACKAGE_INSTALL_E2E_PATH, "utf8");
     expect(packageRunner).not.toMatch(/(^|\n)\s*docker rm -f "\$CONTAINER_NAME"/u);
@@ -3817,11 +3821,109 @@ heartbeat_elapsed="\${BASH_REMATCH[1]}"
       'DOCKER_COMMAND_TIMEOUT="$DOCKER_RUN_TIMEOUT" docker_e2e_docker_run_cmd run -d',
     );
     expect(packageRunner).not.toMatch(/(^|\n)docker run -d/u);
+    expect(packageRunner).toContain("docker_e2e_remaining_timeout");
+    expect(packageRunner).toContain(
+      'DOCKER_COMMAND_TIMEOUT="$probe_timeout" docker_e2e_docker_cmd exec',
+    );
+    expect(packageRunner).not.toMatch(/(^|\n)\s*docker exec /u);
+    expect(packageRunner).not.toMatch(/(^|\n)\s*docker inspect /u);
     for (const runner of [composeRunner, packageRunner]) {
       expect(runner).toContain(
         'node --import tsx "$ROOT_DIR/scripts/e2e/lib/docker-artifact-proof/write-identities.ts"',
       );
     }
+  });
+
+  it("package-install readiness fails closed when a single docker exec stalls", () => {
+    const binDir = tempDirs.make("openclaw-package-install-stall-");
+    const dockerLog = join(binDir, "docker.log");
+    writeFileSync(
+      join(binDir, "timeout"),
+      [
+        "#!/bin/bash",
+        "set -euo pipefail",
+        'if [ "${1:-}" = "--kill-after=1s" ]; then exit 0; fi',
+        'kill_after=""; budget=""',
+        'while [ "$#" -gt 0 ]; do',
+        '  case "$1" in',
+        '    --kill-after=*) kill_after="${1#--kill-after=}"; shift ;;',
+        '    *s) budget="${1%s}"; shift; break ;;',
+        "    *) shift ;;",
+        "  esac",
+        "done",
+        '"$@" &',
+        "child=$!",
+        'sleep "$budget"',
+        'if kill -0 "$child" 2>/dev/null; then',
+        '  kill -TERM "$child" 2>/dev/null || true',
+        "  sleep 0.1",
+        '  kill -KILL "$child" 2>/dev/null || true',
+        '  wait "$child" 2>/dev/null || true',
+        "  exit 124",
+        "fi",
+        'wait "$child"',
+        "",
+      ].join("\n"),
+    );
+    chmodSync(join(binDir, "timeout"), 0o755);
+    writeFileSync(
+      join(binDir, "docker"),
+      [
+        "#!/bin/bash",
+        "set -euo pipefail",
+        `printf '%s\\n' "$*" >>${JSON.stringify(dockerLog)}`,
+        'if [ "${1:-}" = "exec" ]; then while true; do sleep 1; done; fi',
+        'if [ "${1:-}" = "inspect" ]; then echo true; exit 0; fi',
+        'if [ "${1:-}" = "logs" ]; then exit 0; fi',
+        'if [ "${1:-}" = "rm" ]; then exit 0; fi',
+        "exit 0",
+        "",
+      ].join("\n"),
+    );
+    chmodSync(join(binDir, "docker"), 0o755);
+
+    // Drive only the readiness loop fragment with the production helpers sourced.
+    const script = [
+      "#!/usr/bin/env bash",
+      "set -euo pipefail",
+      `ROOT_DIR=${JSON.stringify(process.cwd())}`,
+      'source "$ROOT_DIR/scripts/lib/docker-e2e-image.sh"',
+      'CONTAINER_NAME="stall-proof"',
+      "READY_DEADLINE_SECONDS=3",
+      "docker_e2e_remaining_timeout() {",
+      '  local deadline_at="$1"',
+      "  local remaining=$((deadline_at - SECONDS))",
+      '  if [ "$remaining" -lt 1 ]; then remaining=1; fi',
+      "  printf '%ss' \"$remaining\"",
+      "}",
+      "READY_DEADLINE_AT=$((SECONDS + READY_DEADLINE_SECONDS))",
+      'while [ "$SECONDS" -lt "$READY_DEADLINE_AT" ]; do',
+      '  probe_timeout="$(docker_e2e_remaining_timeout "$READY_DEADLINE_AT")"',
+      '  if DOCKER_COMMAND_TIMEOUT="$probe_timeout" docker_e2e_docker_cmd exec "$CONTAINER_NAME" test -f /tmp/openclaw-proof-ready; then',
+      "    exit 0",
+      "  fi",
+      "  sleep 1",
+      "done",
+      'echo "package install readiness deadline exceeded" >&2',
+      "exit 1",
+      "",
+    ].join("\n");
+    const scriptPath = join(binDir, "ready-loop.sh");
+    writeFileSync(scriptPath, script);
+    chmodSync(scriptPath, 0o755);
+
+    const startedAt = Date.now();
+    const result = spawnSync("/bin/bash", [scriptPath], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+      },
+    });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("package install readiness deadline exceeded");
+    expect(readFileSync(dockerLog, "utf8")).toContain("exec stall-proof");
+    expect(Date.now() - startedAt).toBeLessThan(20_000);
   });
 
   it("routes the gateway network client through the timeout-aware run helper", () => {

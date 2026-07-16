@@ -1,11 +1,11 @@
 // Tlon plugin module implements channel ops behavior.
-import {
-  readProviderJsonResponse,
-  readResponseTextLimited,
-} from "openclaw/plugin-sdk/provider-http";
+import { readProviderJsonResponse } from "openclaw/plugin-sdk/provider-http";
+import { readResponseTextPrefix } from "openclaw/plugin-sdk/response-limit-runtime";
 import type { LookupFn, SsrFPolicy } from "openclaw/plugin-sdk/ssrf-runtime";
 import { UrbitHttpError } from "./errors.js";
 import { urbitFetch } from "./fetch.js";
+
+const TLON_URBIT_CHANNEL_TIMEOUT_MS = 30_000;
 
 type UrbitChannelDeps = {
   baseUrl: string;
@@ -15,6 +15,8 @@ type UrbitChannelDeps = {
   ssrfPolicy?: SsrFPolicy;
   lookupFn?: LookupFn;
   fetchImpl?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+  /** Wall-clock budget for channel PUT; defaults to TLON_URBIT_CHANNEL_TIMEOUT_MS. */
+  timeoutMs?: number;
 };
 
 async function putUrbitChannel(
@@ -35,7 +37,7 @@ async function putUrbitChannel(
     ssrfPolicy: deps.ssrfPolicy,
     lookupFn: deps.lookupFn,
     fetchImpl: deps.fetchImpl,
-    timeoutMs: 30_000,
+    timeoutMs: deps.timeoutMs ?? TLON_URBIT_CHANNEL_TIMEOUT_MS,
     auditContext: params.auditContext,
   });
 }
@@ -63,9 +65,12 @@ export async function pokeUrbitChannel(
 
   try {
     if (!response.ok && response.status !== 204) {
-      const errorText = await readResponseTextLimited(response, TLON_ERROR_BODY_LIMIT_BYTES).catch(
-        () => "",
-      );
+      // Bound idle body reads so a stalled error payload cannot outlive the poke budget.
+      const errorText = await readResponseTextPrefix(response, TLON_ERROR_BODY_LIMIT_BYTES, {
+        chunkTimeoutMs: deps.timeoutMs ?? TLON_URBIT_CHANNEL_TIMEOUT_MS,
+      })
+        .then((prefix) => prefix.text)
+        .catch(() => "");
       throw new Error(`Poke failed: ${response.status}${errorText ? ` - ${errorText}` : ""}`);
     }
     return pokeId;

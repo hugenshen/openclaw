@@ -4,8 +4,6 @@ import type { ChannelAccountSnapshot } from "openclaw/plugin-sdk/channel-contrac
 import type { ChannelOutboundAdapter } from "openclaw/plugin-sdk/channel-send-result";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import type { ChannelPlugin } from "openclaw/plugin-sdk/core";
-import { expectDefined } from "openclaw/plugin-sdk/expect-runtime";
-import { readResponseTextLimited } from "openclaw/plugin-sdk/provider-http";
 import { monitorTlonProvider } from "./monitor/index.js";
 import { tlonSetupWizard } from "./setup-surface.js";
 import {
@@ -17,7 +15,12 @@ import {
 import { configureClient } from "./tlon-api.js";
 import { resolveTlonAccount } from "./types.js";
 import { authenticate } from "./urbit/auth.js";
-import { ssrfPolicyFromDangerouslyAllowPrivateNetwork } from "./urbit/context.js";
+import { pokeUrbitChannel } from "./urbit/channel-ops.js";
+import {
+  getUrbitContext,
+  normalizeUrbitCookie,
+  ssrfPolicyFromDangerouslyAllowPrivateNetwork,
+} from "./urbit/context.js";
 import { urbitFetch } from "./urbit/fetch.js";
 import {
   buildMediaStory,
@@ -44,48 +47,27 @@ async function createHttpPokeApi(params: {
   const ssrfPolicy = ssrfPolicyFromDangerouslyAllowPrivateNetwork(
     params.dangerouslyAllowPrivateNetwork,
   );
-  const cookie = await authenticate(params.url, params.code, { ssrfPolicy });
+  const cookie = normalizeUrbitCookie(await authenticate(params.url, params.code, { ssrfPolicy }));
   const channelId = `${Math.floor(Date.now() / 1000)}-${crypto.randomUUID()}`;
-  const channelPath = `/~/channel/${channelId}`;
-  const shipName = params.ship.replace(/^~/, "");
+  const ctx = getUrbitContext(params.url, params.ship);
 
   return {
     poke: async (pokeParams: { app: string; mark: string; json: unknown }) => {
-      const pokeId = Date.now();
-      const pokeData = {
-        id: pokeId,
-        action: "poke",
-        ship: shipName,
-        app: pokeParams.app,
-        mark: pokeParams.mark,
-        json: pokeParams.json,
-      };
-
-      const { response, release } = await urbitFetch({
-        baseUrl: params.url,
-        path: channelPath,
-        init: {
-          method: "PUT",
-          headers: {
-            "Content-Type": "application/json",
-            Cookie: expectDefined(cookie.split(";").at(0), "cookie first segment"),
-          },
-          body: JSON.stringify([pokeData]),
+      return await pokeUrbitChannel(
+        {
+          baseUrl: ctx.baseUrl,
+          cookie,
+          ship: ctx.ship,
+          channelId,
+          ssrfPolicy,
         },
-        ssrfPolicy,
-        auditContext: "tlon-poke",
-      });
-
-      try {
-        if (!response.ok && response.status !== 204) {
-          const errorText = await readResponseTextLimited(response, 16 * 1024);
-          throw new Error(`Poke failed: ${response.status} - ${errorText}`);
-        }
-
-        return pokeId;
-      } finally {
-        await release();
-      }
+        {
+          app: pokeParams.app,
+          mark: pokeParams.mark,
+          json: pokeParams.json,
+          auditContext: "tlon-poke",
+        },
+      );
     },
     delete: async () => {
       // No-op for HTTP-only client

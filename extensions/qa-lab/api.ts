@@ -116,3 +116,6 @@ export {
   runQaFlowSuite,
 } from "./src/suite.js";
 export { runQaSuite, type QaSuiteRuntimeResult } from "./src/suite-launch.runtime.js";
+// Test-only Crabline inbound seam; re-exported so production Knip sees a consumer
+// of the transport export (same pattern as qaSuiteProgressTesting above).
+export { qaLabCrablineInboundTesting } from "./src/crabline-transport.js";

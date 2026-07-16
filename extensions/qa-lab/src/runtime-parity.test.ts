@@ -67,6 +67,8 @@ async function captureRuntimeParityWithMockRequests(params: {
   messages?: Array<Record<string, unknown>>;
   requests: Array<Record<string, unknown>>;
   scenarioResult?: Parameters<typeof captureRuntimeParityCell>[0]["scenarioResult"];
+  mockFetchTimeoutMs?: number;
+  hangDebugRequests?: boolean;
 }) {
   const parentPrompt = "Delegate one bounded QA task to a subagent.";
   const tempRoot = await seedRuntimeParityTranscript({
@@ -85,6 +87,11 @@ async function captureRuntimeParityWithMockRequests(params: {
       response.end();
       return;
     }
+    if (params.hangDebugRequests) {
+      // Accept the socket but never write headers/body so the guarded fetch
+      // deadline must fail closed instead of hanging capture forever.
+      return;
+    }
     response.setHeader("Content-Type", "application/json");
     response.end(JSON.stringify(requests));
   });
@@ -99,6 +106,7 @@ async function captureRuntimeParityWithMockRequests(params: {
       mockBaseUrl: `http://127.0.0.1:${address.port}`,
       scenarioResult: params.scenarioResult ?? { status: "pass" },
       wallClockMs: 10,
+      mockFetchTimeoutMs: params.mockFetchTimeoutMs,
     });
   } finally {
     await new Promise<void>((resolve, reject) => {
@@ -211,6 +219,21 @@ describe("runtime parity", () => {
       tool: "read_file",
       errorClass: "tool-result-missing",
     });
+  });
+
+  it("fails closed when mock /debug/requests never responds", async () => {
+    const startedAt = Date.now();
+    const cell = await captureRuntimeParityWithMockRequests({
+      requests: [{ plannedToolName: "read_file", plannedToolArgs: { path: "README.md" } }],
+      hangDebugRequests: true,
+      mockFetchTimeoutMs: 80,
+    });
+    const elapsedMs = Date.now() - startedAt;
+
+    // Timed-out mock fetch returns null and falls back to the (empty) transcript
+    // tool list instead of hanging past the request deadline.
+    expect(cell.toolCalls).toEqual([]);
+    expect(elapsedMs).toBeLessThan(5_000);
   });
 
   it("keeps resolved mock tool calls eligible for no-drift parity", async () => {

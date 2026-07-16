@@ -10,6 +10,7 @@ import {
 } from "@openclaw/crabline";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
+import { readProviderJsonResponse } from "openclaw/plugin-sdk/provider-http";
 import { fetchWithSsrFGuard } from "openclaw/plugin-sdk/ssrf-runtime";
 import {
   isRecord,
@@ -190,10 +191,14 @@ async function waitForCrablineReady(params: {
   );
 }
 
+const QA_LAB_CRABLINE_INBOUND_TIMEOUT_MS = 15_000;
+
 async function postCrablineInbound(params: {
   adapter: StartedOpenClawCrablineAdapter;
   providerInbound: OpenClawCrablineInbound;
 }) {
+  // Match suite-runtime-gateway: timeout the guarded fetch and bound JSON so a
+  // hung admin inbound endpoint cannot stall the Crabline scenario forever.
   const { response, release } = await fetchWithSsrFGuard({
     url: params.adapter.manifest.endpoints.adminInboundUrl,
     init: {
@@ -205,6 +210,7 @@ async function postCrablineInbound(params: {
       method: "POST",
     },
     policy: { allowPrivateNetwork: true },
+    timeoutMs: QA_LAB_CRABLINE_INBOUND_TIMEOUT_MS,
     auditContext: `qa-lab-crabline-${params.adapter.channel}-inbound`,
   });
   try {
@@ -213,7 +219,10 @@ async function postCrablineInbound(params: {
         `Crabline ${params.adapter.channel} inbound injection failed with HTTP ${response.status}.`,
       );
     }
-    const result: unknown = await response.json();
+    const result = await readProviderJsonResponse<unknown>(
+      response,
+      `qa-lab-crabline-${params.adapter.channel}-inbound`,
+    );
     if (params.adapter.channel === "matrix" && isRecord(result) && isRecord(result.event)) {
       return readStringValue(result.event.event_id);
     }
@@ -443,6 +452,11 @@ class QaCrablineTransport extends QaStateBackedTransportAdapter {
     await this.#state.cleanup();
   }
 }
+
+export const qaLabCrablineInboundTesting = {
+  postCrablineInbound,
+  timeoutMs: QA_LAB_CRABLINE_INBOUND_TIMEOUT_MS,
+};
 
 export async function createQaCrablineTransportAdapter(params: {
   outputDir: string;

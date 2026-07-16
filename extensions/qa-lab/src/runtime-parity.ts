@@ -1,8 +1,9 @@
+// Qa Lab plugin module implements runtime parity behavior.
+import { readProviderJsonResponse } from "openclaw/plugin-sdk/provider-http";
 import {
   listSessionEntries,
   loadTranscriptEventsSync,
 } from "openclaw/plugin-sdk/session-store-runtime";
-// Qa Lab plugin module implements runtime parity behavior.
 import { fetchWithSsrFGuard } from "openclaw/plugin-sdk/ssrf-runtime";
 import {
   asFiniteNumber as readFiniteNumber,
@@ -126,6 +127,8 @@ type RuntimeParityCaptureParams = {
   wallClockMs: number;
   agentId?: string;
   mockBaseUrl?: string;
+  /** Test-only override for the mock /debug/requests guarded-fetch deadline. */
+  mockFetchTimeoutMs?: number;
 };
 
 type RuntimeParitySessionEntry = {
@@ -1034,19 +1037,25 @@ async function loadRuntimeParityTranscripts(params: {
   return transcripts.join("\n");
 }
 
+const QA_LAB_RUNTIME_PARITY_MOCK_FETCH_TIMEOUT_MS = 15_000;
+
 async function loadRuntimeParityMockToolCalls(
   mockBaseUrl: string | undefined,
   parentPrompt: string,
   parentPrompts: readonly string[] = [parentPrompt],
+  timeoutMs = QA_LAB_RUNTIME_PARITY_MOCK_FETCH_TIMEOUT_MS,
 ): Promise<RuntimeParityToolCall[] | null> {
   const normalizedBaseUrl = mockBaseUrl?.trim().replace(/\/+$/u, "");
   if (!normalizedBaseUrl) {
     return null;
   }
   try {
+    // Match suite-runtime-gateway: timeout + bounded JSON so a hung mock
+    // /debug/requests endpoint cannot stall runtime-parity capture forever.
     const { response, release } = await fetchWithSsrFGuard({
       url: `${normalizedBaseUrl}/debug/requests`,
       policy: { allowPrivateNetwork: true },
+      timeoutMs,
       auditContext: "qa-lab-runtime-parity-mock-tool-calls",
     });
     let payload: unknown;
@@ -1054,7 +1063,7 @@ async function loadRuntimeParityMockToolCalls(
       if (!response.ok) {
         return null;
       }
-      payload = await response.json();
+      payload = await readProviderJsonResponse(response, "qa-lab-runtime-parity-mock-tool-calls");
     } finally {
       await release();
     }
@@ -1097,6 +1106,7 @@ export async function captureRuntimeParityCell(
     params.mockBaseUrl,
     parentPrompt,
     parentPrompts,
+    params.mockFetchTimeoutMs ?? QA_LAB_RUNTIME_PARITY_MOCK_FETCH_TIMEOUT_MS,
   );
   const gatewayLogs = params.gateway.logs?.();
   const sentinelFindings = [

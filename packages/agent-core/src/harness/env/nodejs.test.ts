@@ -147,6 +147,49 @@ describe("NodeExecutionEnv timeout handling", () => {
       await expect(resultPromise).resolves.toMatchObject({ ok: true });
     },
   );
+
+  it("settles timeout even when the child never emits close", async () => {
+    const child = mockSpawnChild();
+    const resultPromise = env.exec("sleep forever", { timeout: 0.05 });
+    await waitForSpawnCall();
+    const result = await resultPromise;
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("timeout");
+    }
+    // Late close must not throw or re-settle.
+    expect(() => child.emit("close", 0)).not.toThrow();
+  });
+
+  it("settles abort even when the child never emits close", async () => {
+    const child = mockSpawnChild();
+    const abort = new AbortController();
+    const resultPromise = env.exec("sleep forever", { abortSignal: abort.signal });
+    await waitForSpawnCall();
+    abort.abort();
+    const result = await resultPromise;
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("aborted");
+    }
+    expect(() => child.emit("close", 0)).not.toThrow();
+  });
+
+  it("prefers the first of abort and timeout when both race", async () => {
+    mockSpawnChild();
+    const abort = new AbortController();
+    const resultPromise = env.exec("sleep forever", {
+      timeout: 5,
+      abortSignal: abort.signal,
+    });
+    await waitForSpawnCall();
+    abort.abort();
+    const result = await resultPromise;
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("aborted");
+    }
+  });
 });
 
 describe("NodeExecutionEnv exec stream errors", () => {

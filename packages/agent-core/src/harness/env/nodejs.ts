@@ -158,20 +158,30 @@ async function runCommand(
 ): Promise<{ stdout: string; status: number | null }> {
   return await new Promise((resolveLocal) => {
     let stdout = "";
+    let settled = false;
     let child: ReturnType<typeof spawn>;
+    const settleLocal = (result: { stdout: string; status: number | null }) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      resolveLocal(result);
+    };
     try {
       child = spawn(command, args, {
         stdio: ["ignore", "pipe", "ignore"],
         windowsHide: true,
       });
     } catch {
-      resolveLocal({ stdout: "", status: null });
+      settleLocal({ stdout: "", status: null });
       return;
     }
+    // Timeout must settle even when kill fails or the child never emits close.
     const timeout = setTimeout(() => {
       if (child.pid) {
         killProcessTree(child.pid, { force: true, detached: false });
       }
+      settleLocal({ stdout: "", status: null });
     }, timeoutMs);
     child.stdout?.setEncoding("utf8");
     child.stdout?.on("data", (chunk: string) => {
@@ -182,15 +192,15 @@ async function runCommand(
         killProcessTree(child.pid, { force: true, detached: false });
       }
       clearTimeout(timeout);
-      resolveLocal({ stdout: "", status: null });
+      settleLocal({ stdout: "", status: null });
     });
     child.on("error", () => {
       clearTimeout(timeout);
-      resolveLocal({ stdout: "", status: null });
+      settleLocal({ stdout: "", status: null });
     });
     child.on("close", (status) => {
       clearTimeout(timeout);
-      resolveLocal({ stdout, status });
+      settleLocal({ stdout, status });
     });
   });
 }
@@ -306,12 +316,10 @@ export class NodeExecutionEnv implements ExecutionEnv {
       let stdout = "";
       let stderr = "";
       let settled = false;
-      let timedOut = false;
-      let callbackError: ExecutionError | undefined;
       let child: ReturnType<typeof spawn> | undefined;
       const timeoutRef: { current?: ReturnType<typeof setTimeout> } = {};
 
-      const onAbort = () => {
+      const killChild = () => {
         if (child?.pid) {
           killProcessTree(child.pid, { force: true });
         }
@@ -333,6 +341,18 @@ export class NodeExecutionEnv implements ExecutionEnv {
         resolvePromise(result);
       };
 
+      // Kill best-effort, then settle immediately so timeout/abort never wait on close.
+      const settleAfterKill = (
+        result: Result<{ stdout: string; stderr: string; exitCode: number }, ExecutionError>,
+      ) => {
+        killChild();
+        settle(result);
+      };
+
+      const onAbort = () => {
+        settleAfterKill(err(new ExecutionError("aborted", "aborted")));
+      };
+
       try {
         child = spawn(shellConfig.value.shell, [...shellConfig.value.args, command], {
           cwd,
@@ -352,10 +372,7 @@ export class NodeExecutionEnv implements ExecutionEnv {
         timeoutMs === undefined
           ? undefined
           : setTimeout(() => {
-              timedOut = true;
-              if (child?.pid) {
-                killProcessTree(child.pid, { force: true });
-              }
+              settleAfterKill(err(new ExecutionError("timeout", `timeout:${options?.timeout}`)));
             }, timeoutMs);
 
       if (options?.abortSignal) {
@@ -369,23 +386,27 @@ export class NodeExecutionEnv implements ExecutionEnv {
       child.stdout?.setEncoding("utf8");
       child.stderr?.setEncoding("utf8");
       child.stdout?.on("data", (chunk: string) => {
+        if (settled) {
+          return;
+        }
         stdout += chunk;
         try {
           options?.onStdout?.(chunk);
         } catch (error) {
           const cause = toErrorObject(error, "Non-Error thrown");
-          callbackError = new ExecutionError("callback_error", cause.message, cause);
-          onAbort();
+          settleAfterKill(err(new ExecutionError("callback_error", cause.message, cause)));
         }
       });
       child.stderr?.on("data", (chunk: string) => {
+        if (settled) {
+          return;
+        }
         stderr += chunk;
         try {
           options?.onStderr?.(chunk);
         } catch (error) {
           const cause = toErrorObject(error, "Non-Error thrown");
-          callbackError = new ExecutionError("callback_error", cause.message, cause);
-          onAbort();
+          settleAfterKill(err(new ExecutionError("callback_error", cause.message, cause)));
         }
       });
 
@@ -396,8 +417,7 @@ export class NodeExecutionEnv implements ExecutionEnv {
         if (settled) {
           return;
         }
-        onAbort();
-        settle(
+        settleAfterKill(
           err(new ExecutionError("spawn_error", `${stream} read error: ${error.message}`, error)),
         );
       };
@@ -408,16 +428,8 @@ export class NodeExecutionEnv implements ExecutionEnv {
       });
 
       child.on("close", (code) => {
-        if (callbackError) {
-          settle(err(callbackError));
-          return;
-        }
-        if (timedOut) {
-          settle(err(new ExecutionError("timeout", `timeout:${options?.timeout}`)));
-          return;
-        }
-        if (options?.abortSignal?.aborted) {
-          settle(err(new ExecutionError("aborted", "aborted")));
+        // Late close after timeout/abort/callback settle is ignored.
+        if (settled) {
           return;
         }
         settle(ok({ stdout, stderr, exitCode: code ?? 0 }));

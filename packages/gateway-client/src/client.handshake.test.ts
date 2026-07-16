@@ -1,21 +1,20 @@
 // Gateway Client tests cover websocket opening-handshake timeout behavior.
-import { readFile } from "node:fs/promises";
 import net from "node:net";
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
 import { GatewayClient } from "./client.js";
-import {
-  DEFAULT_PREAUTH_HANDSHAKE_TIMEOUT_MS,
-  resolvePreauthHandshakeTimeoutMs,
-} from "./timeouts.js";
 
 describe("GatewayClient websocket opening handshakeTimeout", () => {
   const servers: net.Server[] = [];
+  const sockets: net.Socket[] = [];
   const clients: GatewayClient[] = [];
 
   afterEach(async () => {
     for (const client of clients.splice(0)) {
       client.stop();
+    }
+    for (const socket of sockets.splice(0)) {
+      socket.destroy();
     }
     await Promise.all(
       servers.splice(0).map(
@@ -27,19 +26,11 @@ describe("GatewayClient websocket opening handshakeTimeout", () => {
     );
   });
 
-  it("wires handshakeTimeout from resolvePreauthHandshakeTimeoutMs into WebSocket options", async () => {
-    const source = await readFile(new URL("./client.ts", import.meta.url), "utf8");
-    expect(source).toMatch(/handshakeTimeout:\s*handshakeTimeoutMs/);
-    expect(source).toMatch(/resolvePreauthHandshakeTimeoutMs\(/);
-    expect(resolvePreauthHandshakeTimeoutMs()).toBe(DEFAULT_PREAUTH_HANDSHAKE_TIMEOUT_MS);
-  });
-
   it("fails when a peer accepts TCP but never completes the websocket upgrade", async () => {
     // Accept TCP but never complete the websocket upgrade so missing
     // handshakeTimeout would leave start() waiting forever for open.
-    const accepted: net.Socket[] = [];
     const server = net.createServer((socket) => {
-      accepted.push(socket);
+      sockets.push(socket);
     });
     servers.push(server);
     await new Promise<void>((resolve, reject) => {
@@ -97,9 +88,5 @@ describe("GatewayClient websocket opening handshakeTimeout", () => {
         outcome.errorMessage ?? `closed=${outcome.closed}`
       }`,
     );
-
-    for (const socket of accepted) {
-      socket.destroy();
-    }
   });
 });

@@ -3743,4 +3743,15 @@ describe("ci workflow guards", () => {
       'call.getFile().getRelativePath() = "extensions/codex/src/app-server/transport-websocket.ts"',
     );
   });
+
+  it("bounds OpenShell install curl fetches with connection and transfer deadlines", () => {
+    const workflow = parse(
+      readFileSync(".github/workflows/openclaw-live-and-e2e-checks-reusable.yml", "utf8"),
+    ) as { jobs: Record<string, { steps: WorkflowStep[] }> };
+    const installStep = Object.values(workflow.jobs)
+      .flatMap((job) => job.steps)
+      .find((step) => step.name === "Install OpenShell CLI");
+
+    expect(installStep?.run).toContain("curl -LsSf --connect-timeout 10 --max-time 120");
+  });
 });

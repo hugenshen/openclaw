@@ -1,4 +1,4 @@
-// Live Chrome/CDP proof: blocked redirect openTab must not sticky-adopt.
+// Live Chrome/CDP proof for a target whose redirect has already settled.
 import { spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import http from "node:http";
@@ -150,7 +150,7 @@ describeLive("browser (live): sticky blocked openTab", () => {
   });
 
   it(
-    "rejects a LAN→loopback redirect and keeps the previous sticky target",
+    "rejects a discovered target after its LAN→loopback redirect settles",
     { timeout: 60_000 },
     async () => {
       const state = makeState("openclaw");
@@ -175,9 +175,9 @@ describeLive("browser (live): sticky blocked openTab", () => {
       expect(state.profiles.get("openclaw")?.lastTargetId).toBe(good.targetId);
 
       const redirectUrl = `http://${lanIp}:${redirectPort}/go`;
-      // Create the redirected target with real Chrome first and wait until CDP
-      // reports the private final URL. openTab then runs the production
-      // discovery + assertBrowserNavigationResultAllowed + sticky-adoption path.
+      // Seed the target with real Chrome and wait for the redirect to settle.
+      // openTab then exercises production discovery, policy, and sticky ordering;
+      // this intentionally does not claim end-to-end target creation coverage.
       const blocked = await cdpModule.createTargetViaCdp({
         cdpUrl,
         url: redirectUrl,
@@ -202,8 +202,9 @@ describeLive("browser (live): sticky blocked openTab", () => {
       console.log(
         JSON.stringify(
           {
-            proof: "live-chrome-cdp-sticky-blocked-openTab",
+            proof: "live-chrome-cdp-settled-target-sticky-guard",
             chrome: "Google Chrome headless CDP",
+            targetCreation: "preseeded-to-control-final-url-observation",
             redirectRequestHost: "LAN IPv4 (allowlisted)",
             finalUrlHost: "127.0.0.1",
             openTabRejected: true,

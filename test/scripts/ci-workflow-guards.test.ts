@@ -1092,4 +1092,15 @@ describe("ci workflow guards", () => {
     expect(workflow).toContain("Network runtime boundary-sensitive added lines");
     expect(workflow).toContain("if: ${{ github.event_name != 'pull_request' }}");
   });
+
+  it("bounds Mantis runner IP discovery curl with connection and transfer deadlines", () => {
+    const workflow = readFileSync(".github/workflows/mantis-slack-desktop-smoke.yml", "utf8");
+    const checkipCurls = workflow.match(/curl[^\n]*checkip[^\n]*/g) ?? [];
+
+    expect(checkipCurls.length).toBeGreaterThanOrEqual(1);
+    for (const line of checkipCurls) {
+      expect(line).toContain("--connect-timeout");
+      expect(line).toContain("--max-time");
+    }
+  });
 });

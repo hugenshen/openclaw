@@ -98,4 +98,111 @@ describe("pokeTlonChannel request timeout (outbound sendText/sendMedia caller pa
 
     expect(typeof pokeId).toBe("number");
   });
+
+  // Compatibility proof: a real ship that just answers slowly (well within the
+  // budget) must still succeed. The timeout must only fail requests that
+  // actually overrun the budget, not merely "slow" ones.
+  it("does not kill a poke that is slow but completes within the timeout budget", async () => {
+    const budgetMs = 300;
+    server = http.createServer((_req, res) => {
+      setTimeout(() => {
+        res.writeHead(204);
+        res.end();
+      }, budgetMs / 2);
+    });
+    const port = await listen(server);
+
+    const startedAt = Date.now();
+    const pokeId = await pokeTlonChannel(
+      {
+        url: `http://127.0.0.1:${port}`,
+        cookie: "urbauth-~zod=test",
+        channelPath: "/~/channel/slow-success",
+        shipName: "zod",
+        ssrfPolicy: { allowPrivateNetwork: true },
+        timeoutMs: budgetMs,
+      },
+      { app: "chat", mark: "chat-action", json: {} },
+    );
+
+    expect(typeof pokeId).toBe("number");
+    expect(Date.now() - startedAt).toBeLessThan(budgetMs);
+  });
+
+  // Compatibility proof: an error body that trickles in (each gap under the
+  // idle bound) but finishes inside the overall budget must be read in full,
+  // not treated as a stall just because it arrived in several small writes.
+  it("reads a slow-trickling error body in full when it completes within the timeout budget", async () => {
+    const budgetMs = 300;
+    const chunkGapMs = 40;
+    const chunks = ["boom", "-still", "-going", "-done"];
+    server = http.createServer((_req, res) => {
+      res.writeHead(500, { "Content-Type": "text/plain" });
+      let index = 0;
+      const writeNext = () => {
+        if (index >= chunks.length) {
+          res.end();
+          return;
+        }
+        res.write(chunks[index]);
+        index += 1;
+        setTimeout(writeNext, chunkGapMs);
+      };
+      writeNext();
+    });
+    const port = await listen(server);
+
+    const err = await pokeTlonChannel(
+      {
+        url: `http://127.0.0.1:${port}`,
+        cookie: "urbauth-~zod=test",
+        channelPath: "/~/channel/slow-error-body",
+        shipName: "zod",
+        ssrfPolicy: { allowPrivateNetwork: true },
+        timeoutMs: budgetMs,
+      },
+      { app: "chat", mark: "chat-action", json: {} },
+    ).catch((error: unknown) => error);
+
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toBe(`Poke failed: 500 - ${chunks.join("")}`);
+  });
+
+  // Compatibility proof: the timeout is a true wall-clock cap on the whole
+  // poke, not merely a per-chunk idle timer. A body that trickles in chunks
+  // small enough to never trip the idle bound, but whose total time exceeds
+  // the budget, must still be aborted at (approximately) the budget, not
+  // allowed to run past it.
+  it("aborts a trickling error body once total elapsed time exceeds the budget, even though every gap stays under the idle bound", async () => {
+    const budgetMs = 300;
+    const chunkGapMs = 80; // each gap < budgetMs (idle-safe) but 6 gaps > budgetMs overall.
+    server = http.createServer((_req, res) => {
+      res.writeHead(500, { "Content-Type": "text/plain" });
+      const writeNext = () => {
+        res.write("x");
+        setTimeout(writeNext, chunkGapMs);
+      };
+      writeNext();
+    });
+    const port = await listen(server);
+
+    const startedAt = Date.now();
+    const err = await pokeTlonChannel(
+      {
+        url: `http://127.0.0.1:${port}`,
+        cookie: "urbauth-~zod=test",
+        channelPath: "/~/channel/trickle-past-budget",
+        shipName: "zod",
+        ssrfPolicy: { allowPrivateNetwork: true },
+        timeoutMs: budgetMs,
+      },
+      { app: "chat", mark: "chat-action", json: {} },
+    ).catch((error: unknown) => error);
+
+    const elapsedMs = Date.now() - startedAt;
+    expect(err).toBeInstanceOf(Error);
+    // Bounded by the overall budget (plus scheduling slack), not by however
+    // long the trickle happened to keep going.
+    expect(elapsedMs).toBeLessThan(budgetMs + 1_000);
+  });
 });

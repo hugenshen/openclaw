@@ -74,4 +74,71 @@ describe("pokeUrbitChannel request timeout", () => {
     expect(err).toBeInstanceOf(Error);
     expect(Date.now() - startedAt).toBeLessThan(5_000);
   });
+
+  // Compatibility proof: a real ship that just answers slowly (well within the
+  // budget) must still succeed; the timeout must only fail requests that
+  // actually overrun the budget, not merely "slow" ones.
+  it("does not kill a poke that is slow but completes within the timeout budget", async () => {
+    const budgetMs = 300;
+    server = http.createServer((_req, res) => {
+      setTimeout(() => {
+        res.writeHead(204);
+        res.end();
+      }, budgetMs / 2);
+    });
+    const port = await listen(server);
+
+    const startedAt = Date.now();
+    const pokeId = await pokeUrbitChannel(
+      {
+        baseUrl: `http://127.0.0.1:${port}`,
+        cookie: "urbauth-~zod=test",
+        ship: "zod",
+        channelId: "slow-success",
+        timeoutMs: budgetMs,
+        ssrfPolicy: { allowPrivateNetwork: true },
+        lookupFn: lookupLoopback,
+      },
+      { app: "chat", mark: "chat-action", json: {}, auditContext: "test-slow-success" },
+    );
+
+    expect(typeof pokeId).toBe("number");
+    expect(Date.now() - startedAt).toBeLessThan(budgetMs);
+  });
+
+  // Compatibility proof: the timeout is a true wall-clock cap on the whole
+  // poke, not merely a per-chunk idle timer. A body that trickles in chunks
+  // small enough to never trip the idle bound, but whose total time exceeds
+  // the budget, must still be aborted at (approximately) the budget.
+  it("aborts a trickling error body once total elapsed time exceeds the budget, even though every gap stays under the idle bound", async () => {
+    const budgetMs = 300;
+    const chunkGapMs = 80; // each gap < budgetMs (idle-safe) but 6 gaps > budgetMs overall.
+    server = http.createServer((_req, res) => {
+      res.writeHead(500, { "Content-Type": "text/plain" });
+      const writeNext = () => {
+        res.write("x");
+        setTimeout(writeNext, chunkGapMs);
+      };
+      writeNext();
+    });
+    const port = await listen(server);
+
+    const startedAt = Date.now();
+    const err = await pokeUrbitChannel(
+      {
+        baseUrl: `http://127.0.0.1:${port}`,
+        cookie: "urbauth-~zod=test",
+        ship: "zod",
+        channelId: "trickle-past-budget",
+        timeoutMs: budgetMs,
+        ssrfPolicy: { allowPrivateNetwork: true },
+        lookupFn: lookupLoopback,
+      },
+      { app: "chat", mark: "chat-action", json: {}, auditContext: "test-trickle-past-budget" },
+    ).catch((error: unknown) => error);
+
+    const elapsedMs = Date.now() - startedAt;
+    expect(err).toBeInstanceOf(Error);
+    expect(elapsedMs).toBeLessThan(budgetMs + 1_000);
+  });
 });

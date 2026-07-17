@@ -60,21 +60,6 @@ function isUnsupportedModelResult(result: ProbeResult): boolean {
   );
 }
 
-async function fetchWithTimeoutLocal(
-  fetchFn: typeof fetch,
-  url: string,
-  init: RequestInit,
-  timeoutMs: number,
-): Promise<Response> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    return await fetchFn(url, { ...init, signal: controller.signal });
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
 async function probeZaiChatCompletions(params: {
   baseUrl: string;
   apiKey: string;
@@ -82,26 +67,27 @@ async function probeZaiChatCompletions(params: {
   timeoutMs: number;
   fetchFn?: typeof fetch;
 }): Promise<ProbeResult> {
+  // Keep one deadline across headers and the bounded error-body read. Clearing
+  // the AbortSignal when fetch returns lets a stalled error body hang forever.
+  const controller = new AbortController();
+  const deadlineMs = Date.now() + params.timeoutMs;
+  const timeout = setTimeout(() => controller.abort(), params.timeoutMs);
   try {
     const fetchFn = params.fetchFn ?? globalThis.fetch;
-    const res = await fetchWithTimeoutLocal(
-      fetchFn,
-      `${params.baseUrl}/chat/completions`,
-      {
-        method: "POST",
-        headers: {
-          authorization: `Bearer ${params.apiKey}`,
-          "content-type": "application/json",
-        },
-        body: JSON.stringify({
-          model: params.modelId,
-          stream: false,
-          max_tokens: 1,
-          messages: [{ role: "user", content: "ping" }],
-        }),
+    const res = await fetchFn(`${params.baseUrl}/chat/completions`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${params.apiKey}`,
+        "content-type": "application/json",
       },
-      params.timeoutMs,
-    );
+      body: JSON.stringify({
+        model: params.modelId,
+        stream: false,
+        max_tokens: 1,
+        messages: [{ role: "user", content: "ping" }],
+      }),
+      signal: controller.signal,
+    });
 
     if (res.ok) {
       return { ok: true };
@@ -110,7 +96,13 @@ async function probeZaiChatCompletions(params: {
     let errorCode: string | undefined;
     let errorMessage: string | undefined;
     try {
+      // Clamp the idle timeout to the remaining probe budget so the chunk
+      // idle timer does not outlast the overall deadline.
+      const remainingChunkMs = Math.max(1, deadlineMs - Date.now());
       const bytes = await readResponseWithLimit(res, ZAI_DETECT_ERROR_BODY_MAX_BYTES, {
+        chunkTimeoutMs: remainingChunkMs,
+        onIdleTimeout: ({ chunkTimeoutMs }) =>
+          new Error(`Z.AI probe error body stalled: no data received for ${chunkTimeoutMs}ms`),
         onOverflow: ({ maxBytes }) =>
           new Error(`Z.AI probe error body exceeded size limit (${maxBytes} bytes)`),
       });
@@ -131,12 +123,14 @@ async function probeZaiChatCompletions(params: {
         errorMessage = msg;
       }
     } catch {
-      // ignore malformed error bodies
+      // ignore malformed / stalled / oversized error bodies
     }
 
     return { ok: false, status: res.status, errorCode, errorMessage };
   } catch {
     return { ok: false };
+  } finally {
+    clearTimeout(timeout);
   }
 }
 

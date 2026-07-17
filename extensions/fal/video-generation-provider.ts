@@ -230,10 +230,15 @@ async function downloadFalVideo(
     let buffer: Buffer;
     try {
       buffer = await readResponseWithLimit(response, maxBytes, {
+        chunkTimeoutMs: DEFAULT_HTTP_TIMEOUT_MS,
         onOverflow: ({ maxBytes: maxBytesLocal }) => {
           exceededMaxBytes = true;
           return new Error(`fal generated video download exceeds ${maxBytesLocal} bytes`);
         },
+        onIdleTimeout: ({ chunkTimeoutMs }) =>
+          new Error(
+            `fal generated video download stalled: no data received for ${chunkTimeoutMs}ms`,
+          ),
       });
     } catch (error) {
       if (exceededMaxBytes) {

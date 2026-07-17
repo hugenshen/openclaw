@@ -632,6 +632,11 @@ async function fetchImageBuffer(
     const mimeType = response.headers.get("content-type")?.trim() || "image/png";
     return {
       buffer: await readResponseWithLimit(response, maxBytes, {
+        chunkTimeoutMs: DEFAULT_HTTP_TIMEOUT_MS,
+        onIdleTimeout: ({ chunkTimeoutMs }) =>
+          new Error(
+            `fal generated image download stalled: no data received for ${chunkTimeoutMs}ms`,
+          ),
         onOverflow: ({ maxBytes: maxBytesLocal }) =>
           new Error(`fal generated image download exceeds ${maxBytesLocal} bytes`),
       }),

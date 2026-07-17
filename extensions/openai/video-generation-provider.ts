@@ -268,8 +268,13 @@ async function downloadOpenAIVideo(
   try {
     const mimeType = normalizeOptionalString(response.headers.get("content-type")) ?? "video/mp4";
     const buffer = await readResponseWithLimit(response, params.maxBytes, {
+      chunkTimeoutMs: resolveOpenAIVideoDownloadTimeoutMs(params.timeoutMs),
       onOverflow: ({ maxBytes }) =>
         new Error(`OpenAI generated video download exceeds ${maxBytes} bytes`),
+      onIdleTimeout: ({ chunkTimeoutMs }) =>
+        new Error(
+          `OpenAI generated video download stalled: no data received for ${chunkTimeoutMs}ms`,
+        ),
     });
     return {
       buffer,

@@ -147,6 +147,15 @@ async function pollTogetherVideo(params: {
   });
 }
 
+function resolveTogetherVideoDownloadTimeoutMs(
+  timeoutMs: ProviderOperationTimeoutMs | undefined,
+): number {
+  const resolved = typeof timeoutMs === "function" ? timeoutMs() : timeoutMs;
+  return typeof resolved === "number" && Number.isFinite(resolved) && resolved > 0
+    ? resolved
+    : DEFAULT_TIMEOUT_MS;
+}
+
 async function downloadTogetherVideo(params: {
   url: string;
   timeoutMs?: ProviderOperationTimeoutMs;
@@ -163,6 +172,11 @@ async function downloadTogetherVideo(params: {
   });
   const mimeType = normalizeOptionalString(response.headers.get("content-type")) ?? "video/mp4";
   const buffer = await readResponseWithLimit(response, params.maxBytes, {
+    chunkTimeoutMs: resolveTogetherVideoDownloadTimeoutMs(params.timeoutMs),
+    onIdleTimeout: ({ chunkTimeoutMs }) =>
+      new Error(
+        `Together generated video download stalled: no data received for ${chunkTimeoutMs}ms`,
+      ),
     onOverflow: ({ maxBytes }) =>
       new Error(`Together generated video download exceeds ${maxBytes} bytes`),
   });

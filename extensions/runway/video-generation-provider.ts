@@ -317,6 +317,15 @@ async function pollRunwayTask(params: {
   throw new Error(`Runway video generation task ${params.taskId} did not finish in time`);
 }
 
+function resolveRunwayVideoDownloadTimeoutMs(
+  timeoutMs: ProviderOperationTimeoutMs | undefined,
+): number {
+  const resolved = typeof timeoutMs === "function" ? timeoutMs() : timeoutMs;
+  return typeof resolved === "number" && Number.isFinite(resolved) && resolved > 0
+    ? resolved
+    : DEFAULT_TIMEOUT_MS;
+}
+
 async function downloadRunwayVideos(params: {
   urls: string[];
   timeoutMs?: ProviderOperationTimeoutMs;
@@ -335,8 +344,13 @@ async function downloadRunwayVideos(params: {
     });
     const mimeType = normalizeOptionalString(response.headers.get("content-type")) ?? "video/mp4";
     const buffer = await readResponseWithLimit(response, params.maxBytes, {
+      chunkTimeoutMs: resolveRunwayVideoDownloadTimeoutMs(params.timeoutMs),
       onOverflow: ({ maxBytes }) =>
         new Error(`Runway generated video download exceeds ${maxBytes} bytes`),
+      onIdleTimeout: ({ chunkTimeoutMs }) =>
+        new Error(
+          `Runway generated video download stalled: no data received for ${chunkTimeoutMs}ms`,
+        ),
     });
     videos.push({
       buffer,

@@ -170,8 +170,13 @@ async function downloadTrackFromUrl(params: {
     const ext = extensionForMime(mimeType)?.replace(/^\./u, "") || "mp3";
     return {
       buffer: await readResponseWithLimit(result.response, params.maxBytes, {
+        chunkTimeoutMs: DEFAULT_TIMEOUT_MS,
         onOverflow: ({ maxBytes }) =>
           new Error(`MiniMax generated music download exceeds ${maxBytes} bytes`),
+        onIdleTimeout: ({ chunkTimeoutMs }) =>
+          new Error(
+            `MiniMax generated music download stalled: no data received for ${chunkTimeoutMs}ms`,
+          ),
       }),
       mimeType,
       fileName: `track-1.${ext}`,

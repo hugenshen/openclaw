@@ -285,10 +285,23 @@ vi.mock("openclaw/plugin-sdk/provider-http", () => ({
     label,
     timeoutMs,
   }),
+  // Preserve explicit request deadlines so caller-path idle-timeout tests can
+  // pass a short timeoutMs without waiting for the full default budget.
   createProviderOperationTimeoutResolver:
-    ({ defaultTimeoutMs }: { defaultTimeoutMs: number }) =>
-    () =>
+    ({
       defaultTimeoutMs,
+      deadline,
+    }: {
+      defaultTimeoutMs: number;
+      deadline?: { timeoutMs?: number };
+    }) =>
+    () => {
+      const fromDeadline = deadline?.timeoutMs;
+      if (typeof fromDeadline === "number" && Number.isFinite(fromDeadline) && fromDeadline > 0) {
+        return Math.min(defaultTimeoutMs, fromDeadline);
+      }
+      return defaultTimeoutMs;
+    },
   executeProviderOperationWithRetry: providerHttpMocks.executeProviderOperationWithRetryMock,
   fetchProviderDownloadResponse: providerHttpMocks.fetchProviderDownloadResponseMock,
   fetchProviderOperationResponse: providerHttpMocks.fetchProviderOperationResponseMock,
@@ -299,8 +312,19 @@ vi.mock("openclaw/plugin-sdk/provider-http", () => ({
   postMultipartRequest: providerHttpMocks.postMultipartRequestMock,
   providerOperationRetryConfig: (_stage: string) => true,
   readProviderJsonResponse: providerHttpMocks.readProviderJsonResponseMock,
-  resolveProviderOperationTimeoutMs: ({ defaultTimeoutMs }: { defaultTimeoutMs: number }) =>
+  resolveProviderOperationTimeoutMs: ({
     defaultTimeoutMs,
+    deadline,
+  }: {
+    defaultTimeoutMs: number;
+    deadline?: { timeoutMs?: number };
+  }) => {
+    const fromDeadline = deadline?.timeoutMs;
+    if (typeof fromDeadline === "number" && Number.isFinite(fromDeadline) && fromDeadline > 0) {
+      return Math.min(defaultTimeoutMs, fromDeadline);
+    }
+    return defaultTimeoutMs;
+  },
   resolveProviderHttpRequestConfig: providerHttpMocks.resolveProviderHttpRequestConfigMock,
   resolveProviderRequestHeaders: providerHttpMocks.resolveProviderRequestHeadersMock,
   [providerHttpMockKeys.sanitizeConfiguredModelProviderRequest]:

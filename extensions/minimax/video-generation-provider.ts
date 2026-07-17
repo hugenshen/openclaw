@@ -311,8 +311,13 @@ async function downloadVideoFromUrl(params: {
   try {
     const mimeType = normalizeOptionalString(response.headers.get("content-type")) ?? "video/mp4";
     const buffer = await readResponseWithLimit(response, params.maxBytes, {
+      chunkTimeoutMs: resolveMinimaxRequestTimeoutMs(params.timeoutMs) ?? DEFAULT_TIMEOUT_MS,
       onOverflow: ({ maxBytes }) =>
         new Error(`MiniMax generated video download exceeds ${maxBytes} bytes`),
+      onIdleTimeout: ({ chunkTimeoutMs }) =>
+        new Error(
+          `MiniMax generated video download stalled: no data received for ${chunkTimeoutMs}ms`,
+        ),
     });
     return {
       buffer,
@@ -373,8 +378,13 @@ async function downloadVideoFromFileId(params: {
   try {
     const mimeType = normalizeOptionalString(response.headers.get("content-type")) ?? "video/mp4";
     const buffer = await readResponseWithLimit(response, params.maxBytes, {
+      chunkTimeoutMs: resolveMinimaxRequestTimeoutMs(params.timeoutMs) ?? DEFAULT_TIMEOUT_MS,
       onOverflow: ({ maxBytes }) =>
         new Error(`MiniMax generated video download exceeds ${maxBytes} bytes`),
+      onIdleTimeout: ({ chunkTimeoutMs }) =>
+        new Error(
+          `MiniMax generated video download stalled: no data received for ${chunkTimeoutMs}ms`,
+        ),
     });
     return {
       buffer,

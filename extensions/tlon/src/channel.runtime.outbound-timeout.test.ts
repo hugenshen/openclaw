@@ -1,38 +1,16 @@
-// Caller-path proof: outbound sendText routes through pokeUrbitChannel (30s budget).
+// Prove the outbound poke PUT (the actual caller path used by sendText/sendMedia)
+// aborts when headers or an error body stall, and still succeeds normally otherwise.
 import http from "node:http";
 import type { AddressInfo } from "node:net";
-import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
-import type { LookupFn } from "openclaw/plugin-sdk/ssrf-runtime";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-const pokeUrbitChannel = vi.hoisted(() => vi.fn());
-const lookupLoopback = (async () => [{ address: "127.0.0.1", family: 4 }]) as unknown as LookupFn;
+const STALL_TIMEOUT_MS = 80;
 
 vi.mock("./urbit/auth.js", () => ({
   authenticate: vi.fn(async () => "urbauth-~zod=test; Path=/; HttpOnly"),
 }));
 
-vi.mock("./urbit/channel-ops.js", async () => {
-  const actual =
-    await vi.importActual<typeof import("./urbit/channel-ops.js")>("./urbit/channel-ops.js");
-  return {
-    ...actual,
-    pokeUrbitChannel: pokeUrbitChannel.mockImplementation(
-      (deps: Parameters<typeof actual.pokeUrbitChannel>[0], params) =>
-        actual.pokeUrbitChannel(
-          {
-            ...deps,
-            timeoutMs: 80,
-            ssrfPolicy: { allowPrivateNetwork: true },
-            lookupFn: lookupLoopback,
-          },
-          params,
-        ),
-    ),
-  };
-});
-
-const { tlonRuntimeOutbound } = await import("./channel.runtime.js");
+const { pokeTlonChannel } = await import("./channel.runtime.js");
 
 async function listen(server: http.Server): Promise<number> {
   return await new Promise<number>((resolve) => {
@@ -42,42 +20,82 @@ async function listen(server: http.Server): Promise<number> {
   });
 }
 
-describe("tlonRuntimeOutbound poke timeout", () => {
+describe("pokeTlonChannel request timeout (outbound sendText/sendMedia caller path)", () => {
   let server: http.Server;
 
   afterEach(async () => {
-    pokeUrbitChannel.mockClear();
     await new Promise<void>((resolve) => {
       server?.close(() => resolve());
     });
   });
 
-  it("sendText uses pokeUrbitChannel and aborts when PUT never returns headers", async () => {
+  it("aborts when the channel PUT never returns headers", async () => {
     server = http.createServer((_req, res) => {
+      // Never write headers; leave the socket open until the client aborts.
       void res;
     });
     const port = await listen(server);
-    const cfg = {
-      channels: {
-        tlon: {
-          ship: "~zod",
-          code: "lidlut-tabwed-pillex-ridrup",
-          url: `http://127.0.0.1:${port}`,
-          network: { dangerouslyAllowPrivateNetwork: true },
-        },
-      },
-    } as OpenClawConfig;
 
     const startedAt = Date.now();
-    await expect(
-      tlonRuntimeOutbound.sendText!({
-        cfg,
-        to: "~sampel-palnet",
-        text: "hello",
-      } as Parameters<NonNullable<typeof tlonRuntimeOutbound.sendText>>[0]),
-    ).rejects.toBeInstanceOf(Error);
+    const err = await pokeTlonChannel(
+      {
+        url: `http://127.0.0.1:${port}`,
+        cookie: "urbauth-~zod=test",
+        channelPath: "/~/channel/stall-headers",
+        shipName: "zod",
+        ssrfPolicy: { allowPrivateNetwork: true },
+        timeoutMs: STALL_TIMEOUT_MS,
+      },
+      { app: "chat", mark: "chat-action", json: {} },
+    ).catch((error: unknown) => error);
 
-    expect(pokeUrbitChannel).toHaveBeenCalledOnce();
+    expect(err).toBeInstanceOf(Error);
     expect(Date.now() - startedAt).toBeLessThan(5_000);
+  });
+
+  it("aborts when an error response body stalls after headers", async () => {
+    server = http.createServer((_req, res) => {
+      res.writeHead(500, { "Content-Type": "text/plain", "Content-Length": "1048576" });
+      // Headers sent; body never completes. Idle-bounded read must still reject.
+    });
+    const port = await listen(server);
+
+    const startedAt = Date.now();
+    const err = await pokeTlonChannel(
+      {
+        url: `http://127.0.0.1:${port}`,
+        cookie: "urbauth-~zod=test",
+        channelPath: "/~/channel/stall-body",
+        shipName: "zod",
+        ssrfPolicy: { allowPrivateNetwork: true },
+        timeoutMs: STALL_TIMEOUT_MS,
+      },
+      { app: "chat", mark: "chat-action", json: {} },
+    ).catch((error: unknown) => error);
+
+    expect(err).toBeInstanceOf(Error);
+    expect(Date.now() - startedAt).toBeLessThan(5_000);
+  });
+
+  it("still returns the poke id on a normal 204 response", async () => {
+    server = http.createServer((_req, res) => {
+      res.writeHead(204);
+      res.end();
+    });
+    const port = await listen(server);
+
+    const pokeId = await pokeTlonChannel(
+      {
+        url: `http://127.0.0.1:${port}`,
+        cookie: "urbauth-~zod=test",
+        channelPath: "/~/channel/success",
+        shipName: "zod",
+        ssrfPolicy: { allowPrivateNetwork: true },
+        timeoutMs: STALL_TIMEOUT_MS,
+      },
+      { app: "chat", mark: "chat-action", json: {} },
+    );
+
+    expect(typeof pokeId).toBe("number");
   });
 });

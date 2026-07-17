@@ -6,9 +6,12 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync 
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { readBoundedResponseText } from "../lib/bounded-response.mjs";
 
 // Evidence bundles can include full videos, so allow slow transfers while bounding each PUT.
 const MANTIS_ARTIFACT_UPLOAD_TIMEOUT_MS = 300_000;
+// Untrusted storage error bodies are for diagnostics only; keep them small.
+const MANTIS_UPLOAD_ERROR_BODY_MAX_BYTES = 64 * 1024;
 
 function parseArgs(argv) {
   const args = {};
@@ -461,7 +464,22 @@ async function uploadArtifact({ artifact, fetchImpl, request, timeoutMs }) {
   if (response.ok) {
     return;
   }
-  const responseText = await response.text();
+  let responseText;
+  try {
+    responseText = await readBoundedResponseText(
+      response,
+      "Mantis upload error",
+      MANTIS_UPLOAD_ERROR_BODY_MAX_BYTES,
+      { signal },
+    );
+  } catch (bodyError) {
+    // Only swallow size-exceeded diagnostics; propagate timeouts and other failures.
+    if (bodyError instanceof Error && bodyError.message.includes("response body exceeded")) {
+      responseText = bodyError.message;
+    } else {
+      throw bodyError;
+    }
+  }
   throw new Error(
     `Failed to upload Mantis artifact ${artifact.targetPath}: ${response.status} ${response.statusText}\n${responseText}`,
   );

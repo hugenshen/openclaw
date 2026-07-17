@@ -200,6 +200,126 @@ describe("scripts/mantis/publish-pr-evidence", () => {
     expect(observedSignal?.aborted).toBe(true);
   });
 
+  it("bounds oversized non-ok upload error response bodies", async () => {
+    const manifest = loadEvidenceManifest(writeFixtureManifest());
+    const chunk = new Uint8Array(8 * 1024).fill("x".charCodeAt(0));
+    let enqueuedBytes = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        enqueuedBytes += chunk.byteLength;
+        controller.enqueue(chunk);
+      },
+    });
+
+    const upload = publishArtifactFiles({
+      artifactRoot: "mantis/discord/pr-1/run-1",
+      fetchImpl: async () =>
+        new Response(body, {
+          status: 503,
+          statusText: "Service Unavailable",
+        }),
+      manifest,
+      storageConfig: {
+        accessKeyId: "access",
+        bucket: "qa-artifacts",
+        endpoint: "https://example.r2.cloudflarestorage.com",
+        publicBaseUrl: "https://qa.openclaw.ai",
+        region: "auto",
+        secretAccessKey: "secret",
+      },
+    });
+
+    await expect(upload).rejects.toMatchObject({
+      message: expect.stringMatching(
+        /^Failed to upload Mantis artifact baseline\.png: 503 Service Unavailable\nMantis upload error response body exceeded 65536 bytes$/u,
+      ),
+    });
+    // Unbounded response.text() would keep pulling forever; the bound cancels after ~64 KiB.
+    expect(enqueuedBytes).toBeGreaterThan(64 * 1024);
+    expect(enqueuedBytes).toBeLessThanOrEqual(256 * 1024);
+  });
+
+  it("propagates signal abort during non-ok upload error body reading", async () => {
+    const manifest = loadEvidenceManifest(writeFixtureManifest());
+    // A slow-streaming error body that will stall until the signal fires.
+    const body = new ReadableStream<Uint8Array>({
+      pull() {
+        // Never resolves; the signal will abort the read.
+        return new Promise(() => {});
+      },
+    });
+
+    const upload = publishArtifactFiles({
+      artifactRoot: "mantis/discord/pr-1/run-1",
+      fetchImpl: async () =>
+        new Response(body, {
+          status: 503,
+          statusText: "Service Unavailable",
+        }),
+      manifest,
+      storageConfig: {
+        accessKeyId: "access",
+        bucket: "qa-artifacts",
+        endpoint: "https://example.r2.cloudflarestorage.com",
+        publicBaseUrl: "https://qa.openclaw.ai",
+        region: "auto",
+        secretAccessKey: "secret",
+      },
+      timeoutMs: 50,
+    });
+
+    // The signal timeout should propagate as an abort/timeout error, not be swallowed
+    // into a generic "Failed to upload" message.
+    await expect(upload).rejects.toThrow();
+    // Verify the error is a TimeoutError (not masked as a size-exceeded diagnostic).
+    try {
+      await upload;
+    } catch (error) {
+      expect(error).toBeInstanceOf(Error);
+      const message = (error as Error).message ?? "";
+      // Must NOT contain the size-exceeded message that only body-too-large errors carry.
+      expect(message).not.toContain("response body exceeded");
+      // The outer uploadArtifact timeout wrapper or the bounded reader's abort path
+      // should surface a timeout or abort indicator.
+      const cause = (error as Error).cause;
+      const isTimeoutOrAbort =
+        message.includes("abort") ||
+        message.includes("Timed out") ||
+        message.includes("timeout") ||
+        (cause instanceof Error && cause.name === "TimeoutError");
+      expect(isTimeoutOrAbort).toBe(true);
+    }
+  });
+
+  it("reads small non-ok upload error response bodies within the bound", async () => {
+    const manifest = loadEvidenceManifest(writeFixtureManifest());
+    const smallBody = "access denied: invalid credentials";
+
+    const upload = publishArtifactFiles({
+      artifactRoot: "mantis/discord/pr-1/run-1",
+      fetchImpl: async () =>
+        new Response(smallBody, {
+          status: 403,
+          statusText: "Forbidden",
+        }),
+      manifest,
+      storageConfig: {
+        accessKeyId: "access",
+        bucket: "qa-artifacts",
+        endpoint: "https://example.r2.cloudflarestorage.com",
+        publicBaseUrl: "https://qa.openclaw.ai",
+        region: "auto",
+        secretAccessKey: "secret",
+      },
+    });
+
+    await expect(upload).rejects.toMatchObject({
+      message: expect.stringMatching(
+        /^Failed to upload Mantis artifact baseline\.png: 403 Forbidden\naccess denied: invalid credentials$/u,
+      ),
+    });
+  });
+
   it("allows failure manifests to omit optional visual artifacts", () => {
     const dir = mkdtempSync(path.join(tmpdir(), "mantis-evidence-test-"));
     tempDirs.push(dir);

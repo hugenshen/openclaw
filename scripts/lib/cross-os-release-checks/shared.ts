@@ -44,6 +44,50 @@ export function sleep(ms: number) {
   });
 }
 
+/** Milliseconds left before an absolute deadline. May be zero or negative. */
+export function remainingMs(deadline: number, now = Date.now()): number {
+  return deadline - now;
+}
+
+/**
+ * Caps a per-attempt timeout to the remaining deadline budget.
+ * Callers must check remainingMs(deadline) > 0 before starting work that needs a timeout.
+ */
+export function clampTimeoutMs(deadline: number, maxMs: number, now = Date.now()): number {
+  return Math.max(1, Math.min(maxMs, deadline - now));
+}
+
+/**
+ * Polls until `attempt` returns "done" or the deadline is exhausted.
+ * Each attempt receives the clamped timeout and the absolute deadline so that
+ * multi-step callbacks (e.g. status probe + port check) can clamp every
+ * sub-operation to the remaining budget. Interstitial sleep is also clamped.
+ */
+export async function pollUntilDeadline(params: {
+  deadline: number;
+  maxAttemptTimeoutMs: number;
+  maxSleepMs?: number;
+  attempt: (timeoutMs: number, deadline: number) => Promise<"done" | "retry">;
+  sleepFn?: (ms: number) => Promise<void>;
+}): Promise<boolean> {
+  const sleepFn = params.sleepFn ?? sleep;
+  const maxSleepMs = params.maxSleepMs ?? 2_000;
+  while (remainingMs(params.deadline) > 0) {
+    const outcome = await params.attempt(
+      clampTimeoutMs(params.deadline, params.maxAttemptTimeoutMs),
+      params.deadline,
+    );
+    if (outcome === "done") {
+      return true;
+    }
+    if (remainingMs(params.deadline) <= 0) {
+      break;
+    }
+    await sleepFn(clampTimeoutMs(params.deadline, maxSleepMs));
+  }
+  return false;
+}
+
 export function toLintErrorObject(value: unknown, fallbackMessage: string): Error {
   if (value instanceof Error) {
     return value;

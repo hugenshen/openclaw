@@ -43,7 +43,7 @@ import {
 } from "./network-smokes.ts";
 import { registerActiveChildProcessTree, runCommand, withAllocatedGatewayPort } from "./process.ts";
 import { logLanePhase } from "./reporting.ts";
-import { formatError, sleep } from "./shared.ts";
+import { formatError, pollUntilDeadline, sleep } from "./shared.ts";
 
 export async function runOpenClaw(params: {
   lane: LaneState;
@@ -187,27 +187,30 @@ export async function startGateway(params: LaneCommandParams): Promise<GatewayHa
 export async function waitForGateway(params: LaneCommandParams) {
   const statusArgs = await resolveGatewayStatusArgs(params.lane, params.env, params.logPath);
   const deadline = Date.now() + gatewayReadyDeadlineMs();
-  while (Date.now() < deadline) {
-    let result;
-    try {
-      result = await runOpenClaw({
-        lane: params.lane,
-        env: params.env,
-        args: statusArgs,
-        logPath: params.logPath,
-        timeoutMs: CROSS_OS_GATEWAY_STATUS_COMMAND_TIMEOUT_MS,
-        check: false,
-      });
-    } catch {
-      await sleep(2_000);
-      continue;
-    }
-    if (result.exitCode === 0) {
-      return;
-    }
-    await sleep(2_000);
+  // Status probes use a 75s command timeout; clamp each attempt + sleep so the final
+  // iteration cannot overrun the gateway-ready deadline by nearly a full probe budget.
+  const ready = await pollUntilDeadline({
+    deadline,
+    maxAttemptTimeoutMs: CROSS_OS_GATEWAY_STATUS_COMMAND_TIMEOUT_MS,
+    attempt: async (timeoutMs, _deadline) => {
+      try {
+        const result = await runOpenClaw({
+          lane: params.lane,
+          env: params.env,
+          args: statusArgs,
+          logPath: params.logPath,
+          timeoutMs,
+          check: false,
+        });
+        return result.exitCode === 0 ? "done" : "retry";
+      } catch {
+        return "retry";
+      }
+    },
+  });
+  if (!ready) {
+    throw new Error(`Gateway did not become ready on port ${params.lane.gatewayPort}.`);
   }
-  throw new Error(`Gateway did not become ready on port ${params.lane.gatewayPort}.`);
 }
 
 async function resolveGatewayStatusArgs(lane: LaneState, env: NodeJS.ProcessEnv, logPath: string) {

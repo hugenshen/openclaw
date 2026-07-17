@@ -16,7 +16,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve as resolvePath, win32 } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   agentOutputHasExpectedOkMarker,
   agentTurnUsedEmbeddedFallback,
@@ -36,6 +36,7 @@ import {
   buildInstallerSmokeScript,
   buildWindowsPathBootstrapScript,
   canConnectToLoopbackPort,
+  clampTimeoutMs,
   buildDiscordSmokeGuildsConfig,
   buildRealUpdateEnv,
   dashboardHtmlMarkerStatus,
@@ -53,6 +54,8 @@ import {
   CROSS_OS_AGENT_TURN_TIMEOUT_SECONDS,
   CROSS_OS_COMMAND_HEARTBEAT_SECONDS,
   deleteDiscordMessage,
+  pollUntilDeadline,
+  remainingMs,
   isImmutableReleaseRef,
   isRecoverableWindowsPackagedUpgradeSwapCleanupFailure,
   isRecoverableWindowsPackagedUpgradeTimeoutError,
@@ -275,6 +278,102 @@ describe("scripts/openclaw-cross-os-release-checks", () => {
     );
     expect(CROSS_OS_GATEWAY_READY_TIMEOUT_MS).toBeGreaterThanOrEqual(180_000);
     expect(CROSS_OS_WINDOWS_GATEWAY_READY_TIMEOUT_MS).toBeGreaterThanOrEqual(300_000);
+  });
+
+  it("clamps per-attempt timeouts to the remaining deadline budget", () => {
+    const now = 1_000_000;
+    expect(remainingMs(now + 250, now)).toBe(250);
+    expect(remainingMs(now - 1, now)).toBe(-1);
+    expect(clampTimeoutMs(now + 250, CROSS_OS_GATEWAY_STATUS_COMMAND_TIMEOUT_MS, now)).toBe(250);
+    expect(clampTimeoutMs(now + 60_000, CROSS_OS_GATEWAY_STATUS_COMMAND_TIMEOUT_MS, now)).toBe(
+      60_000,
+    );
+    expect(clampTimeoutMs(now + 1, 2_000, now)).toBe(1);
+  });
+
+  it("clamps gateway status poll attempt timeouts to the remaining ready deadline", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000_000);
+    const attemptTimeouts: number[] = [];
+    const attemptDeadlines: number[] = [];
+    const sleepTimeouts: number[] = [];
+    try {
+      const deadline = Date.now() + 250;
+      const ready = await pollUntilDeadline({
+        deadline,
+        maxAttemptTimeoutMs: CROSS_OS_GATEWAY_STATUS_COMMAND_TIMEOUT_MS,
+        maxSleepMs: 2_000,
+        attempt: async (timeoutMs, attemptDeadline) => {
+          attemptTimeouts.push(timeoutMs);
+          attemptDeadlines.push(attemptDeadline);
+          return "retry";
+        },
+        sleepFn: async (ms) => {
+          sleepTimeouts.push(ms);
+          vi.setSystemTime(Date.now() + ms);
+        },
+      });
+
+      expect(ready).toBe(false);
+      expect(attemptTimeouts.length).toBeGreaterThan(0);
+      expect(attemptTimeouts.every((ms) => ms <= 250)).toBe(true);
+      expect(attemptTimeouts[0]).toBe(250);
+      expect(Math.max(...attemptTimeouts)).toBeLessThan(CROSS_OS_GATEWAY_STATUS_COMMAND_TIMEOUT_MS);
+      expect(sleepTimeouts.every((ms) => ms <= 250)).toBe(true);
+      // Attempt callback receives the absolute deadline for sub-operation clamping.
+      expect(attemptDeadlines.every((d) => d === deadline)).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("returns true when the first attempt succeeds", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000_000);
+    try {
+      const deadline = Date.now() + 5_000;
+      const ready = await pollUntilDeadline({
+        deadline,
+        maxAttemptTimeoutMs: CROSS_OS_GATEWAY_STATUS_COMMAND_TIMEOUT_MS,
+        attempt: async () => "done",
+      });
+      expect(ready).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("clamps the stop-waiter loopback-port probe to the remaining budget", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000_000);
+    const portTimeouts: number[] = [];
+    try {
+      const deadline = Date.now() + 150;
+      // Simulate a stop-waiter: status command + port check per iteration.
+      await pollUntilDeadline({
+        deadline,
+        maxAttemptTimeoutMs: CROSS_OS_GATEWAY_STATUS_COMMAND_TIMEOUT_MS,
+        maxSleepMs: 2_000,
+        attempt: async (timeoutMs, attemptDeadline) => {
+          // Advance time by the clamped command timeout to simulate a slow status probe.
+          vi.setSystemTime(Date.now() + timeoutMs);
+          // The port check must clamp its own timeout to the remaining budget.
+          const portTimeout = clampTimeoutMs(attemptDeadline, 1_000);
+          portTimeouts.push(portTimeout);
+          return "retry";
+        },
+        sleepFn: async (ms) => {
+          vi.setSystemTime(Date.now() + ms);
+        },
+      });
+      // Every port-check timeout must be within the original 150ms deadline budget.
+      expect(portTimeouts.length).toBeGreaterThan(0);
+      expect(portTimeouts.every((ms) => ms <= 150)).toBe(true);
+      // At least one port check should be clamped below the default 1s.
+      expect(Math.min(...portTimeouts)).toBeLessThan(1_000);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("keeps gateway status RPC probing when help probing is unavailable", () => {

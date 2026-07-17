@@ -45,7 +45,7 @@ import {
   runCommandInvocation,
   withAllocatedGatewayPort,
 } from "./process.ts";
-import { formatError, shellEscapeForSh, sleep } from "./shared.ts";
+import { clampTimeoutMs, formatError, pollUntilDeadline, shellEscapeForSh } from "./shared.ts";
 
 const INSTALLER_CONNECT_TIMEOUT_SECONDS = 10;
 const INSTALLER_REQUEST_TIMEOUT_SECONDS = 120;
@@ -584,22 +584,27 @@ export async function waitForInstalledGateway(params: {
     logPath: params.logPath,
   });
   const deadline = Date.now() + gatewayReadyDeadlineMs();
-  while (Date.now() < deadline) {
-    const result = await runInstalledCli({
-      cliPath: params.cliPath,
-      args: statusArgs,
-      cwd: params.lane.homeDir,
-      env: params.env,
-      logPath: params.logPath,
-      timeoutMs: CROSS_OS_GATEWAY_STATUS_COMMAND_TIMEOUT_MS,
-      check: false,
-    });
-    if (result.exitCode === 0) {
-      return;
-    }
-    await sleep(2_000);
+  // Installed CLI status uses the same 75s command timeout as the lane waiter; clamp
+  // each attempt + sleep so readiness polling cannot overrun the ready deadline.
+  const ready = await pollUntilDeadline({
+    deadline,
+    maxAttemptTimeoutMs: CROSS_OS_GATEWAY_STATUS_COMMAND_TIMEOUT_MS,
+    attempt: async (timeoutMs, _deadline) => {
+      const result = await runInstalledCli({
+        cliPath: params.cliPath,
+        args: statusArgs,
+        cwd: params.lane.homeDir,
+        env: params.env,
+        logPath: params.logPath,
+        timeoutMs,
+        check: false,
+      });
+      return result.exitCode === 0 ? "done" : "retry";
+    },
+  });
+  if (!ready) {
+    throw new Error(`Gateway did not become ready on port ${params.lane.gatewayPort}.`);
   }
-  throw new Error(`Gateway did not become ready on port ${params.lane.gatewayPort}.`);
 }
 
 export async function waitForInstalledGatewayToStop(params: {
@@ -616,25 +621,33 @@ export async function waitForInstalledGatewayToStop(params: {
     requireRpc: false,
   });
   const deadline = Date.now() + gatewayReadyDeadlineMs();
-  while (Date.now() < deadline) {
-    await runInstalledCli({
-      cliPath: params.cliPath,
-      args: statusArgs,
-      cwd: params.lane.homeDir,
-      env: params.env,
-      logPath: params.logPath,
-      timeoutMs: CROSS_OS_GATEWAY_STATUS_COMMAND_TIMEOUT_MS,
-      check: false,
-    });
-    const portReachable = await canConnectToLoopbackPort(params.lane.gatewayPort);
-    if (!portReachable) {
-      return;
-    }
-    await sleep(2_000);
+  // Stop polling also arms full status-command timeouts; keep the managed-stop budget
+  // honest so manual fallback is not delayed by an unclamped final probe.
+  // The attempt receives both the clamped status-command timeout and the deadline
+  // so the loopback-port check after the status command is also clamped.
+  const stopped = await pollUntilDeadline({
+    deadline,
+    maxAttemptTimeoutMs: CROSS_OS_GATEWAY_STATUS_COMMAND_TIMEOUT_MS,
+    attempt: async (timeoutMs, attemptDeadline) => {
+      await runInstalledCli({
+        cliPath: params.cliPath,
+        args: statusArgs,
+        cwd: params.lane.homeDir,
+        env: params.env,
+        logPath: params.logPath,
+        timeoutMs,
+        check: false,
+      });
+      const portTimeoutMs = clampTimeoutMs(attemptDeadline, 1_000);
+      const portReachable = await canConnectToLoopbackPort(params.lane.gatewayPort, portTimeoutMs);
+      return portReachable ? "retry" : "done";
+    },
+  });
+  if (!stopped) {
+    throw new Error(
+      `Managed gateway did not stop on port ${params.lane.gatewayPort} before manual fallback.`,
+    );
   }
-  throw new Error(
-    `Managed gateway did not stop on port ${params.lane.gatewayPort} before manual fallback.`,
-  );
 }
 
 export async function ensureManagedGatewayReady(params: {

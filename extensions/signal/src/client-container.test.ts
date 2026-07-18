@@ -691,6 +691,38 @@ describe("containerRestRequest", () => {
       vi.useRealTimers();
     }
   });
+
+  it("preserves the deadline error for slow-drip non-ok bodies", async () => {
+    vi.useFakeTimers();
+    try {
+      let observedSignal: AbortSignal | undefined;
+      mockFetch.mockImplementation(async (_url, init: RequestInit) => {
+        observedSignal = init.signal ?? undefined;
+        return new Response(
+          delayedBodyStream([
+            { delayMs: 10, text: "{" },
+            { delayMs: 20, text: '"error"' },
+            { delayMs: 20, text: ':"busy"' },
+            { delayMs: 20, text: "}" },
+          ]).body,
+          { status: 503, statusText: "Service Unavailable" },
+        );
+      });
+
+      const request = containerRestRequest("/v1/about", {
+        baseUrl: "http://localhost:8080",
+        timeoutMs: 25,
+      });
+
+      await vi.advanceTimersByTimeAsync(0);
+      const requestRejection = expect(request).rejects.toThrow("Signal REST request timed out");
+      await vi.advanceTimersByTimeAsync(25);
+      await requestRejection;
+      expect(observedSignal?.aborted).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("containerSendMessage", () => {

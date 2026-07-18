@@ -41,11 +41,13 @@ describe("signal REST real-server deadline", () => {
   it("aborts a slow-drip body that never idles, at the request deadline", async () => {
     // Drip a byte every 50ms: below the 300ms idle guard, so only the total request
     // deadline can stop it. This is the exact slow-drip case the fix bounds.
+    let dripCount = 0;
     const server = await startServer((_req, res) => {
       res.writeHead(200, { "content-type": "application/json" });
       res.write("{");
       const drip = setInterval(() => {
         try {
+          dripCount += 1;
           res.write(" ");
         } catch {
           clearInterval(drip);
@@ -60,9 +62,9 @@ describe("signal REST real-server deadline", () => {
     ).rejects.toThrow(/Signal REST request timed out|stalled/);
     const elapsedMs = Date.now() - startedAt;
 
-    // Kept alive until the deadline (not an instant idle abort), then bounded well
-    // short of a hang. Without the total-deadline fix the drip would outlive timeoutMs.
-    expect(elapsedMs).toBeGreaterThanOrEqual(250);
+    // Multiple chunks arrived below the idle threshold, yet the absolute deadline
+    // still bounded the call. Without it, this response would continue indefinitely.
+    expect(dripCount).toBeGreaterThan(1);
     expect(elapsedMs).toBeLessThan(2_000);
   });
 

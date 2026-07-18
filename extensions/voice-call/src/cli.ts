@@ -193,11 +193,10 @@ async function pollVoiceCallContinueGateway(params: {
 }): Promise<unknown> {
   const deadlineMs = resolveVoiceCallDeadlineMs(params.timeoutMs);
 
-  while (Date.now() <= deadlineMs) {
+  for (;;) {
     // Sleep already clamps to remaining budget; the gateway RPC must too.
-    // Otherwise the final poll can overrun the user-facing continue timeout by
-    // a full VOICE_CALL_GATEWAY_DEFAULT_TIMEOUT_MS.
-    const remainingMs = Math.max(0, deadlineMs - Date.now());
+    // Otherwise the final poll can overrun the continue deadline by a full RPC timeout.
+    const remainingMs = deadlineMs - Date.now();
     if (remainingMs <= 0) {
       break;
     }
@@ -220,10 +219,7 @@ async function pollVoiceCallContinueGateway(params: {
     if (result.status === "failed") {
       throw new Error(result.error);
     }
-    const sleepMs = Math.min(
-      VOICE_CALL_GATEWAY_POLL_INTERVAL_MS,
-      Math.max(0, deadlineMs - Date.now()),
-    );
+    const sleepMs = Math.min(VOICE_CALL_GATEWAY_POLL_INTERVAL_MS, deadlineMs - Date.now());
     if (sleepMs <= 0) {
       break;
     }

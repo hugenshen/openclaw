@@ -1,5 +1,9 @@
 // Zai plugin module implements detect behavior.
 import { resolveTimerTimeoutMs } from "openclaw/plugin-sdk/number-runtime";
+import {
+  createProviderOperationDeadline,
+  createProviderOperationTimeoutResolver,
+} from "openclaw/plugin-sdk/provider-http";
 import { readResponseWithLimit } from "openclaw/plugin-sdk/response-limit-runtime";
 import {
   ZAI_CN_BASE_URL,
@@ -67,14 +71,21 @@ async function probeZaiChatCompletions(params: {
   timeoutMs: number;
   fetchFn?: typeof fetch;
 }): Promise<ProbeResult> {
-  // Keep one deadline across headers and the bounded error-body read. Clearing
-  // the AbortSignal when fetch returns lets a stalled error body hang forever.
+  const deadline = createProviderOperationDeadline({
+    timeoutMs: params.timeoutMs,
+    label: "Z.AI endpoint probe",
+  });
+  const resolveTimeoutMs = createProviderOperationTimeoutResolver({
+    deadline,
+    defaultTimeoutMs: params.timeoutMs,
+  });
   const controller = new AbortController();
-  const deadlineMs = Date.now() + params.timeoutMs;
   const timeout = setTimeout(() => controller.abort(), params.timeoutMs);
+  timeout.unref?.();
+  let res: Response | undefined;
   try {
     const fetchFn = params.fetchFn ?? globalThis.fetch;
-    const res = await fetchFn(`${params.baseUrl}/chat/completions`, {
+    res = await fetchFn(`${params.baseUrl}/chat/completions`, {
       method: "POST",
       headers: {
         authorization: `Bearer ${params.apiKey}`,
@@ -96,13 +107,12 @@ async function probeZaiChatCompletions(params: {
     let errorCode: string | undefined;
     let errorMessage: string | undefined;
     try {
-      // Clamp the idle timeout to the remaining probe budget so the chunk
-      // idle timer does not outlast the overall deadline.
-      const remainingChunkMs = Math.max(1, deadlineMs - Date.now());
       const bytes = await readResponseWithLimit(res, ZAI_DETECT_ERROR_BODY_MAX_BYTES, {
-        chunkTimeoutMs: remainingChunkMs,
-        onIdleTimeout: ({ chunkTimeoutMs }) =>
-          new Error(`Z.AI probe error body stalled: no data received for ${chunkTimeoutMs}ms`),
+        // Resolve immediately before body consumption so headers and every
+        // body shape share one operation budget, including slow-drip streams.
+        timeoutMs: resolveTimeoutMs,
+        onTimeout: ({ timeoutMs }) =>
+          new Error(`Z.AI probe error body timed out after ${timeoutMs}ms`),
         onOverflow: ({ maxBytes }) =>
           new Error(`Z.AI probe error body exceeded size limit (${maxBytes} bytes)`),
       });
@@ -131,6 +141,9 @@ async function probeZaiChatCompletions(params: {
     return { ok: false };
   } finally {
     clearTimeout(timeout);
+    if (res?.bodyUsed !== true) {
+      await res?.body?.cancel().catch(() => undefined);
+    }
   }
 }
 

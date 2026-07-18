@@ -338,7 +338,7 @@ describe("detectZaiEndpoint", () => {
 
   it("fails closed when a probe error body stalls without chunks", async () => {
     // Headers return 400, but the error body never enqueues. Without
-    // chunkTimeoutMs the probe would hang past the request deadline.
+    // the whole-body deadline the probe would hang indefinitely.
     const fetchFn = (async (url: string) => {
       if (url !== "https://api.z.ai/api/paas/v4/chat/completions") {
         throw new Error(`unexpected url: ${url}`);
@@ -368,5 +368,40 @@ describe("detectZaiEndpoint", () => {
     // The probe must fail within the deadline budget, not hang indefinitely.
     // Allow 2× the timeout for scheduling overhead; a hang would take seconds.
     expect(elapsedMs).toBeLessThan(2 * timeoutMs);
+  });
+
+  it("keeps one probe deadline through a slow-drip error body", async () => {
+    const state = { cancelled: false };
+    let interval: ReturnType<typeof setInterval> | undefined;
+    const fetchFn = (async () => {
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          interval = setInterval(() => controller.enqueue(new Uint8Array([123])), 10);
+        },
+        cancel() {
+          state.cancelled = true;
+          if (interval) {
+            clearInterval(interval);
+          }
+        },
+      });
+      return new Response(body, {
+        status: 400,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    const timeoutMs = 80;
+    const startedAt = Date.now();
+    const detected = await detectZaiEndpoint({
+      apiKey: "sk-test", // pragma: allowlist secret
+      endpoint: "global",
+      timeoutMs,
+      fetchFn,
+    });
+
+    expect(detected).toBeNull();
+    expect(Date.now() - startedAt).toBeLessThan(3 * timeoutMs);
+    expect(state.cancelled).toBe(true);
   });
 });

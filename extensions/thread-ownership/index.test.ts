@@ -1,8 +1,36 @@
+import { once } from "node:events";
 // Thread Ownership tests cover index plugin behavior.
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawPluginApi } from "./api.js";
-import register from "./index.js";
+import register, { OWNERSHIP_CONFLICT_MAX_BYTES, resetMentionedThreadsForTests } from "./index.js";
+
+function createOversizedConflictResponse(minBytes: number): Response {
+  const chunk = Buffer.alloc(16 * 1024, 0x78);
+  let sent = 0;
+  const stream = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (sent === 0) {
+        const prefix = Buffer.from('{"owner":"');
+        controller.enqueue(prefix);
+        sent += prefix.length;
+        return;
+      }
+      if (sent < minBytes) {
+        controller.enqueue(chunk);
+        sent += chunk.length;
+        return;
+      }
+      controller.enqueue(Buffer.from('"}'));
+      controller.close();
+    },
+  });
+  return new Response(stream, {
+    status: 409,
+    headers: { "Content-Type": "application/json" },
+  });
+}
 
 describe("thread-ownership plugin", () => {
   const hooks: Record<string, Function> = {};
@@ -53,6 +81,7 @@ describe("thread-ownership plugin", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    resetMentionedThreadsForTests();
     for (const key of Object.keys(hooks)) {
       delete hooks[key];
     }
@@ -281,6 +310,86 @@ describe("thread-ownership plugin", () => {
       const warningMessage = requireFirstLogMessage(api.logger.warn, "ownership check warning log");
       expect(warningMessage).toContain("ownership check failed");
     });
+
+    it("fails open when a 409 conflict body exceeds the ownership JSON bound", async () => {
+      vi.mocked(globalThis.fetch).mockResolvedValue(
+        createOversizedConflictResponse(OWNERSHIP_CONFLICT_MAX_BYTES + 1),
+      );
+
+      const result = await sendSlackThreadMessage();
+
+      expect(result).toBeUndefined();
+      const warningMessage = requireFirstLogMessage(api.logger.warn, "ownership check warning log");
+      expect(warningMessage).toContain("ownership check failed");
+      expect(warningMessage).toMatch(/exceeds .* bytes/);
+      expect(api.logger.info).not.toHaveBeenCalled();
+    });
+
+    it("bounds live forwarder 409 bodies over loopback HTTP", async () => {
+      vi.unstubAllGlobals();
+      const handlers: Array<(req: IncomingMessage, res: ServerResponse) => void> = [];
+      const server = createServer((req, res) => {
+        const handler = handlers.shift();
+        if (!handler) {
+          res.writeHead(500);
+          res.end("unexpected");
+          return;
+        }
+        handler(req, res);
+      });
+      server.listen(0, "127.0.0.1");
+      await once(server, "listening");
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("expected TCP listen address");
+      }
+      process.env.SLACK_FORWARDER_URL = `http://127.0.0.1:${address.port}`;
+      for (const key of Object.keys(hooks)) {
+        delete hooks[key];
+      }
+      register.register(api as unknown as OpenClawPluginApi);
+
+      try {
+        handlers.push((_req, res) => {
+          const body = JSON.stringify({ owner: "other-agent" });
+          res.writeHead(409, {
+            "Content-Type": "application/json",
+            "Content-Length": Buffer.byteLength(body),
+          });
+          res.end(body);
+        });
+        const cancelled = await sendSlackThreadMessage();
+        expect(cancelled).toEqual({ cancel: true });
+        expect(requireFirstLogMessage(api.logger.info, "loopback cancel log")).toContain(
+          "cancelled send",
+        );
+
+        api.logger.info.mockClear();
+        api.logger.warn.mockClear();
+        handlers.push((_req, res) => {
+          res.writeHead(409, { "Content-Type": "application/json" });
+          res.write('{"owner":"');
+          const chunk = Buffer.alloc(16 * 1024, 0x78);
+          let sent = 10;
+          while (sent <= OWNERSHIP_CONFLICT_MAX_BYTES) {
+            res.write(chunk);
+            sent += chunk.length;
+          }
+          res.end('"}');
+        });
+        const allowed = await sendSlackThreadMessage();
+        expect(allowed).toBeUndefined();
+        const warningMessage = requireFirstLogMessage(
+          api.logger.warn,
+          "loopback oversized warning log",
+        );
+        expect(warningMessage).toContain("ownership check failed");
+        expect(warningMessage).toMatch(/exceeds .* bytes/);
+      } finally {
+        server.close();
+        await once(server, "close");
+      }
+    });
   });
 
   describe("message_received @-mention tracking", () => {
@@ -504,6 +613,44 @@ describe("thread-ownership plugin", () => {
       );
 
       expect(globalThis.fetch).toHaveBeenCalled();
+    });
+
+    it("evicts oldest mention cache entries once the cache exceeds its cap", async () => {
+      await requireHook("message_received")(
+        {
+          content: "hey @TestBot help",
+          threadId: "1111.0001",
+          metadata: { channelId: "C000" },
+        },
+        { channelId: "slack", conversationId: "C000" },
+      );
+
+      for (let i = 1; i <= 1000; i += 1) {
+        await requireHook("message_received")(
+          {
+            content: "hey @TestBot help",
+            threadId: `2222.${i.toString().padStart(4, "0")}`,
+            metadata: { channelId: `C${i.toString().padStart(3, "0")}` },
+          },
+          { channelId: "slack", conversationId: `C${i.toString().padStart(3, "0")}` },
+        );
+      }
+
+      vi.mocked(globalThis.fetch).mockResolvedValue(
+        new Response(JSON.stringify({ owner: "test-agent" }), { status: 200 }),
+      );
+
+      await requireHook("message_sending")(
+        {
+          content: "On it!",
+          replyToId: "1111.0001",
+          metadata: { channelId: "C000" },
+          to: "C000",
+        },
+        { channelId: "slack", conversationId: "C000" },
+      );
+
+      expect(globalThis.fetch).toHaveBeenCalledTimes(1);
     });
   });
 });

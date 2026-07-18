@@ -1,5 +1,7 @@
 // Thread Ownership plugin entrypoint registers its OpenClaw integration.
+import { pruneMapToMaxSize } from "openclaw/plugin-sdk/collection-runtime";
 import { resolveLivePluginConfigObject } from "openclaw/plugin-sdk/plugin-config-runtime";
+import { readProviderJsonResponse } from "openclaw/plugin-sdk/provider-http";
 import { normalizeOptionalString } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { escapeRegExp } from "openclaw/plugin-sdk/text-utility-runtime";
 import {
@@ -19,9 +21,13 @@ type AgentEntry = NonNullable<NonNullable<OpenClawConfig["agents"]>["list"]>[num
 type ThreadOwnershipMessageSendingResult = { cancel: true } | undefined;
 
 // In-memory set of {channel}:{thread} keys where this agent was @-mentioned.
-// Entries expire after 5 minutes.
+// Entries expire after 5 minutes. Cap bounds memory under bursty Slack churn;
+// eviction can re-enable ownership checks for the oldest mentioned threads.
 const mentionedThreads = new Map<string, number>();
 const MENTION_TTL_MS = 5 * 60 * 1000;
+const MENTIONED_THREADS_MAX_ENTRIES = 1000;
+// Forwarder 409 bodies are tiny owner objects; keep the parse cap explicit and tight.
+export const OWNERSHIP_CONFLICT_MAX_BYTES = 64 * 1024;
 
 function isThreadOwnershipConfig(value: unknown): value is ThreadOwnershipConfig {
   return value !== null && typeof value === "object";
@@ -49,6 +55,15 @@ function cleanExpiredMentions(): void {
       mentionedThreads.delete(key);
     }
   }
+}
+
+function trackMentionedThread(key: string): void {
+  cleanExpiredMentions();
+  if (mentionedThreads.has(key)) {
+    mentionedThreads.delete(key);
+  }
+  mentionedThreads.set(key, Date.now());
+  pruneMapToMaxSize(mentionedThreads, MENTIONED_THREADS_MAX_ENTRIES);
 }
 
 function containsAgentNameMention(text: string, agentName: string): boolean {
@@ -136,8 +151,7 @@ export default definePluginEntry({
         containsAgentNameMention(text, agent.name) ||
         (botUserId && text.includes(`<@${botUserId}>`));
       if (mentioned) {
-        cleanExpiredMentions();
-        mentionedThreads.set(`${channelId}:${threadTs}`, Date.now());
+        trackMentionedThread(`${channelId}:${threadTs}`);
       }
     });
 
@@ -189,7 +203,11 @@ export default definePluginEntry({
             return undefined;
           }
           if (resp.status === 409) {
-            const body = (await resp.json()) as { owner?: string };
+            const body = await readProviderJsonResponse<{ owner?: string }>(
+              resp,
+              "thread-ownership.ownership-conflict",
+              { maxBytes: OWNERSHIP_CONFLICT_MAX_BYTES },
+            );
             api.logger.info?.(
               `thread-ownership: cancelled send to ${channelId}:${threadTs} — owned by ${body.owner}`,
             );
@@ -208,3 +226,7 @@ export default definePluginEntry({
     });
   },
 });
+
+export function resetMentionedThreadsForTests(): void {
+  mentionedThreads.clear();
+}

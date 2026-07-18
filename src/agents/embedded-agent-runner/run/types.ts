@@ -272,6 +272,8 @@ export type EmbeddedRunAttemptResult = {
   acceptedSessionSpawns?: AcceptedSessionSpawn[];
   lastAssistant: AssistantMessage | undefined;
   currentAttemptAssistant?: AssistantMessage | undefined;
+  /** Completed message_end snapshot owned by this model attempt. */
+  currentAttemptCompletedAssistant?: AssistantMessage | undefined;
   lastToolError?: ToolErrorSummary;
   didSendViaMessagingTool: boolean;
   didDeliverSourceReplyViaMessageTool?: boolean;
@@ -282,6 +284,11 @@ export type EmbeddedRunAttemptResult = {
   messagingToolSourceReplyPayloads?: MessagingToolSourceReplyPayload[];
   heartbeatToolResponse?: HeartbeatToolResponse;
   toolMediaUrls?: string[];
+  /**
+   * Native artifacts produced and owned by the harness, never model-selected
+   * dynamic-tool output. Core validates this as a subset of toolMediaUrls.
+   */
+  hostOwnedToolMediaUrls?: string[];
   toolAudioAsVoice?: boolean;
   toolTrustedLocalMedia?: boolean;
   hasToolMediaBlockReply?: boolean;

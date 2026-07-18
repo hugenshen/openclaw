@@ -16,9 +16,13 @@ import { asConfig } from "./runtime.test-support.js";
 
 const { resolveRuntimeWebToolsMock, runtimePrepareImportMock } = vi.hoisted(() => ({
   resolveRuntimeWebToolsMock: vi.fn(async () => ({
-    search: { providerSource: "none", diagnostics: [] },
-    fetch: { providerSource: "none", diagnostics: [] },
-    diagnostics: [],
+    metadata: {
+      search: { providerSource: "none", diagnostics: [] },
+      fetch: { providerSource: "none", diagnostics: [] },
+      diagnostics: [],
+    },
+    degradedOwners: [],
+    secretOwners: [],
   })),
   runtimePrepareImportMock: vi.fn(),
 }));
@@ -41,7 +45,11 @@ vi.mock("./runtime-prepare.runtime.js", () => {
 });
 
 vi.mock("./runtime-owner-assignments.js", () => ({
-  resolveAndApplySecretAssignments: async () => [],
+  listSecretAssignmentOwners: () => [],
+  resolveAndApplySecretAssignments: async () => ({
+    degradedOwners: [],
+    resolvedValues: new Map(),
+  }),
 }));
 
 function emptyAuthStore(): AuthProfileStore {

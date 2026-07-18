@@ -60,6 +60,11 @@ const CORE_GATEWAY_METHOD_SPECS: readonly CoreGatewayMethodSpec[] = [
   { name: "exec.approval.request", scope: "operator.approvals" },
   { name: "exec.approval.waitDecision", scope: "operator.approvals" },
   { name: "exec.approval.resolve", scope: "operator.approvals" },
+  { name: "question.request", scope: "operator.questions" },
+  { name: "question.waitAnswer", scope: "operator.questions" },
+  { name: "question.resolve", scope: "operator.questions" },
+  { name: "question.get", scope: "operator.questions" },
+  { name: "question.list", scope: "operator.questions" },
   { name: "plugin.approval.list", scope: "operator.approvals" },
   { name: "plugin.approval.request", scope: "operator.approvals" },
   { name: "plugin.approval.waitDecision", scope: "operator.approvals" },
@@ -73,6 +78,7 @@ const CORE_GATEWAY_METHOD_SPECS: readonly CoreGatewayMethodSpec[] = [
   // without the shared three-write budget so the automatic ladder can finish.
   { name: "openclaw.setup.activate", scope: "operator.admin" },
   { name: "openclaw.setup.auth.start", scope: "operator.admin" },
+  { name: "openclaw.setup.prepare.start", scope: "operator.admin" },
   { name: "wizard.start", scope: "operator.admin" },
   { name: "wizard.next", scope: "operator.admin" },
   { name: "wizard.cancel", scope: "operator.admin" },
@@ -190,12 +196,16 @@ const CORE_GATEWAY_METHOD_SPECS: readonly CoreGatewayMethodSpec[] = [
   { name: "sessions.compaction.get", scope: "operator.read" },
   { name: "sessions.compaction.branch", scope: "operator.write" },
   { name: "sessions.compaction.restore", scope: "operator.admin" },
+  { name: "sessions.branches.list", scope: "operator.read" },
+  { name: "sessions.branches.switch", scope: "operator.admin" },
+  { name: "sessions.rewind", scope: "operator.admin" },
+  { name: "sessions.fork", scope: "operator.write" },
   // Params-aware: explicit cwd can point at any host checkout and requires admin.
   { name: "sessions.create", scope: "dynamic", startup: true },
   { name: "sessions.send", scope: "operator.write", startup: true },
   { name: "sessions.abort", scope: "operator.write", startup: true },
   // Params-aware: write scope may mutate chat-organization fields
-  // (label/category/pinned/archived/unread); every other patch field stays
+  // (label/category/icon/pinned/archived/unread); every other patch field stays
   // admin-only. Policy lives in method-scopes.ts.
   { name: "sessions.patch", scope: "dynamic" },
   { name: "sessions.pluginPatch", scope: "operator.admin" },
@@ -253,6 +263,9 @@ const CORE_GATEWAY_METHOD_SPECS: readonly CoreGatewayMethodSpec[] = [
   { name: "system-presence", scope: "operator.read" },
   { name: "system-event", scope: "operator.admin" },
   { name: "message.action", scope: "operator.write" },
+  { name: "conversations.send", scope: "operator.admin" },
+  { name: "conversations.turn", scope: "operator.admin" },
+  { name: "conversations.turn.cancel", scope: "operator.admin" },
   { name: "send", scope: "operator.write" },
   { name: "agent", scope: "operator.write" },
   { name: "agent.identity.get", scope: "operator.read" },
@@ -370,6 +383,7 @@ const CORE_GATEWAY_METHOD_SPECS: readonly CoreGatewayMethodSpec[] = [
   { name: "ui.command", scope: "operator.write" },
   { name: "approval.history", scope: "operator.approvals" },
   { name: "plugin.surface.refresh", scope: "operator.read" },
+  { name: "conversations.list", scope: "operator.admin" },
 ] as const;
 
 const CORE_GATEWAY_METHOD_SPEC_BY_NAME: ReadonlyMap<string, CoreGatewayMethodSpec> = new Map(

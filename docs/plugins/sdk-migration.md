@@ -918,8 +918,16 @@ Realtime voice, telephony, meeting, and browser Talk code shares one Talk
 session controller exported by `openclaw/plugin-sdk/realtime-voice`. The
 controller owns the common Talk event envelope, active turn state, capture
 state, output-audio state, recent event history, and stale-turn rejection.
-Provider plugins own vendor-specific realtime sessions; surface plugins own
-capture, playback, telephony, and meeting quirks.
+Provider plugins own vendor-specific realtime sessions. Browser-meeting plugins
+use `openclaw/plugin-sdk/meeting-runtime` for session, browser, audio, node-host,
+agent-consult, and voice-call mechanics, then implement `MeetingPlatformAdapter`
+for URL rules, DOM scripts, manual-action mapping, captions, creation, and dial-in
+plans. Platform REST APIs, OAuth, artifacts, selectors, and wire names remain in
+the plugin. Browser permission plans receive the requested meeting URL so each
+platform can grant only its exact supported origins. Session runtimes must also
+normalize platform-specific live health after confirmed browser departure;
+historical transcript fields may remain, but caption and audio readiness must
+not stay active after leave.
 
 All bundled surfaces run on the shared controller: browser relay,
 managed-room handoff, voice-call realtime, voice-call streaming STT, Google

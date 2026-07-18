@@ -410,15 +410,19 @@ describeControlUiE2e("Control UI session management mocked Gateway E2E", () => {
     try {
       await page.goto(`${server.baseUrl}chat`);
 
-      // Sidebar: pinned rows form their own group ahead of the Sessions group.
-      const sidebarRows = page.locator(".sidebar-recent-sessions__list .sidebar-recent-session");
+      // Sidebar: pinned rows join the ordered page zone while staying out of Threads.
+      const sidebarRows = page.locator(".sidebar-recent-session");
       await sidebarRows.first().waitFor({ state: "visible", timeout: 10_000 });
-      await expect.poll(() => sidebarRows.first().textContent()).toContain("Release planning");
+      const pinnedZoneRow = page.locator(
+        '[data-sidebar-entry="session:agent:main:release"] .sidebar-recent-session',
+      );
+      await expect.poll(() => pinnedZoneRow.textContent()).toContain("Release planning");
       const groups = page.locator(".sidebar-recent-sessions__group");
-      await expect.poll(() => groups.count()).toBe(2);
+      await expect.poll(() => groups.count()).toBe(1);
       await expect
-        .poll(() => groups.first().locator(".sidebar-recent-sessions__label-text").textContent())
-        .toContain("Pinned");
+        .poll(() => groups.first().getAttribute("data-session-section"))
+        .toBe("ungrouped");
+      await expect.poll(() => page.locator('[data-session-section="pinned"]').count()).toBe(0);
 
       // Chats keep recency order with the open session highlighted in place —
       // selecting a row must not reshuffle the list.
@@ -1307,14 +1311,14 @@ describeControlUiE2e("Control UI session management mocked Gateway E2E", () => {
     try {
       await page.goto(`${server.baseUrl}chat`);
 
-      const pinnedGroup = page.locator('[data-session-section="pinned"]');
+      const pinnedEntry = page.locator('[data-sidebar-entry="session:agent:main:pinned"]');
       const chatsGroup = page.locator('[data-session-section="ungrouped"]');
       await expect
-        .poll(() => trimmedTextContents(pinnedGroup.locator(".sidebar-recent-session__name")))
+        .poll(() => trimmedTextContents(pinnedEntry.locator(".sidebar-recent-session__name")))
         .toEqual(["Pinned only"]);
       await expect.poll(() => chatsGroup.locator(".sidebar-recent-session").count()).toBe(0);
       await expect.poll(() => page.locator(".sidebar-recent-session--active").count()).toBe(1);
-      await pinnedGroup.locator(".sidebar-recent-session").dragTo(chatsGroup);
+      await pinnedEntry.locator(".sidebar-recent-session").dragTo(chatsGroup);
       const unpinPatch = await waitForPatch(
         gateway,
         (params) =>
@@ -1325,14 +1329,14 @@ describeControlUiE2e("Control UI session management mocked Gateway E2E", () => {
         key: "agent:main:pinned",
         pinned: false,
       });
-      await expect.poll(() => pinnedGroup.locator(".sidebar-recent-session").count()).toBe(0);
+      await expect.poll(() => pinnedEntry.count()).toBe(0);
       await expect.poll(() => chatsGroup.locator(".sidebar-recent-session").count()).toBe(1);
     } finally {
       await context.close();
     }
   });
 
-  it("pins a session dropped into the Pinned group", async () => {
+  it("pins a session dropped into the interleaved sidebar zone", async () => {
     const context = await browser.newContext({
       locale: "en-US",
       serviceWorkers: "block",
@@ -1368,15 +1372,15 @@ describeControlUiE2e("Control UI session management mocked Gateway E2E", () => {
     try {
       await page.goto(`${server.baseUrl}chat`);
 
-      const pinnedGroup = page.locator('[data-session-section="pinned"]');
+      const pinnedEntry = page.locator('[data-sidebar-entry="session:agent:main:pinned"]');
       const researchGroup = page.locator('[data-session-section="category:Research"]');
       await expect
-        .poll(() => trimmedTextContents(pinnedGroup.locator(".sidebar-recent-session__name")))
+        .poll(() => trimmedTextContents(pinnedEntry.locator(".sidebar-recent-session__name")))
         .toEqual(["Already pinned"]);
       await captureUiProof(page, "sidebar-session-before-pinned-drop.png");
       await researchGroup
         .locator('.sidebar-recent-session[data-session-key="agent:main:candidate"]')
-        .dragTo(pinnedGroup);
+        .dragTo(pinnedEntry);
 
       const pinPatch = await waitForPatch(
         gateway,
@@ -1388,7 +1392,11 @@ describeControlUiE2e("Control UI session management mocked Gateway E2E", () => {
       });
       expect(requireRecord(pinPatch.params)).not.toHaveProperty("category");
       await expect
-        .poll(() => trimmedTextContents(pinnedGroup.locator(".sidebar-recent-session__name")))
+        .poll(() =>
+          trimmedTextContents(
+            page.locator('[data-sidebar-entry^="session:"] .sidebar-recent-session__name'),
+          ),
+        )
         .toEqual(["Already pinned", "Pin me"]);
       await expect.poll(() => researchGroup.locator(".sidebar-recent-session").count()).toBe(0);
       await captureUiProof(page, "sidebar-session-dropped-into-pinned.png");
@@ -1545,7 +1553,7 @@ describeControlUiE2e("Control UI session management mocked Gateway E2E", () => {
       for (let pageIndex = 0; pageIndex < 3; pageIndex += 1) {
         await seeMore.click();
       }
-      await page.locator(".sidebar-recent-sessions").evaluate((element) => {
+      await page.locator(".sidebar-shell__body").evaluate((element) => {
         element.scrollTop = 0;
       });
       await expect
@@ -1577,9 +1585,9 @@ describeControlUiE2e("Control UI session management mocked Gateway E2E", () => {
       expect(overlaps).toBe(0);
 
       // The squeeze regression compressed sections into the viewport with no
-      // overflow; a healthy list is taller than its container and scrolls.
+      // overflow; a healthy sidebar body is taller than its viewport and scrolls.
       const scroll = await page.evaluate(() => {
-        const list = document.querySelector(".sidebar-recent-sessions");
+        const list = document.querySelector(".sidebar-shell__body");
         if (!list) {
           return null;
         }

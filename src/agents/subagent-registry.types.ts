@@ -9,6 +9,15 @@ import type { SubagentRunOutcome } from "./subagent-announce-output.js";
 import type { SubagentLifecycleEndedReason } from "./subagent-lifecycle-events.js";
 import type { SpawnSubagentMode } from "./subagent-spawn.types.js";
 
+export type SubagentProgressOrigin = {
+  channel?: string;
+  accountId?: string;
+  to?: string;
+  threadId?: string | number;
+  channelId?: string | number;
+  messageId?: string | number;
+};
+
 export type PendingFinalDeliveryPayload = {
   requesterSessionKey: string;
   requesterOrigin?: DeliveryContext;
@@ -94,8 +103,14 @@ export type RequesterSettleWakeState = {
   replayCount?: number;
   /** Persisted retry deadline; restore waits until this instant. */
   nextAttemptAt?: number;
-  /** Frozen wave membership once the first delivery attempt is admitted. */
+  /** Frozen wave membership after delivery admission or requester-yield re-admission. */
   batchRunIds?: string[];
+  /** Batch frozen while its spawning requester turn was yielding. */
+  requesterYieldBatch?: true;
+  /** Present only when an idle requester needs a new turn after yielding. */
+  afterRequesterYield?: true;
+  /** Monotonic process generation protecting a newer yield from stale completion. */
+  rearmGeneration?: number;
   lastError?: string | null;
   /** Cleanup wanted to retire this row; defer deletion until the outbox resolves. */
   retireAfterSettle?: boolean;
@@ -114,10 +129,18 @@ export type SubagentRunRecord = {
   runId: string;
   /** Detached task owner; steer/restart changes runId but continues the same task. */
   taskRunId?: string;
+  /** Requester attempt that must settle before this completion row can retire. */
+  requesterTurnRunId?: string;
+  /** Durable proof that this requester attempt invoked sessions_yield. */
+  requesterTurnYielded?: true;
+  /** Cleanup retirement deferred until requesterTurnRunId settles. */
+  retireAfterRequesterTurn?: boolean;
   childSessionKey: string;
   controllerSessionKey?: string;
   requesterSessionKey: string;
   requesterOrigin?: DeliveryContext;
+  /** Durable source locator for transport-neutral progress presentation. */
+  progressOrigin?: SubagentProgressOrigin;
   requesterDisplayKey: string;
   task: string;
   taskName?: string;

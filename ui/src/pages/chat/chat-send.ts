@@ -209,6 +209,9 @@ type ChatSendOptions = {
   /** Lets the side-chat panel restore its typed follow-up when the detached
    * send is not accepted (the panel input is not a managed draft). */
   onSideQuestionSendRejected?: () => void;
+  /** Lets request-scoped UI actions recover when their local slash command
+   * fails before the Gateway accepts it. */
+  onLocalCommandSendRejected?: () => void;
 };
 
 function normalizeAckTimingValue(value: unknown): number | undefined {
@@ -1825,6 +1828,14 @@ async function drainStoredChatOutbox(
               sendResetSlashCommand(host, message, resetOpts),
           },
         );
+        if (dispatchResult === "deferred") {
+          updateQueuedMessageForSession(host, outbox.sessionKey, item.id, (entry) => ({
+            ...entry,
+            sendError: undefined,
+            sendState: "waiting-idle",
+          }));
+          return "blocked";
+        }
         if (dispatchResult === "failed") {
           const commandStillCurrent = commandScopeIsCurrent();
           const error =
@@ -2316,7 +2327,13 @@ export async function handleSendChat(
               sendResetSlashCommand(host, resetMessage, resetOpts),
           },
         );
-        if (dispatchResult === "failed" && messageOverride == null) {
+        if (dispatchResult === "failed") {
+          opts?.onLocalCommandSendRejected?.();
+        }
+        if (
+          (dispatchResult === "failed" || dispatchResult === "cancelled") &&
+          messageOverride == null
+        ) {
           const restorePlan = pendingComposerRestorePlan(host, {
             previousAttachments: attachmentsToSend,
             previousDraft,

@@ -444,14 +444,30 @@ function run(command, args, options = {}) {
 
 async function uploadArtifact({ artifact, fetchImpl, request, timeoutMs }) {
   const signal = AbortSignal.timeout(timeoutMs);
-  let response;
   try {
-    response = await fetchImpl(request.url, {
+    const response = await fetchImpl(request.url, {
       body: request.body,
       headers: request.headers,
       method: request.method,
       signal,
     });
+    if (response.ok) {
+      await response.body?.cancel().catch(() => undefined);
+      return;
+    }
+
+    const failurePrefix = `Failed to upload Mantis artifact ${artifact.targetPath}: ${response.status} ${response.statusText}`;
+    const responseText = await readBoundedResponseText(
+      response,
+      "Mantis upload error",
+      MANTIS_UPLOAD_ERROR_BODY_MAX_BYTES,
+      {
+        signal,
+        formatTooLargeMessage: (_label, maxBytes) =>
+          `${failurePrefix}\nMantis upload error response body exceeded ${maxBytes} bytes`,
+      },
+    );
+    throw new Error(`${failurePrefix}\n${responseText}`);
   } catch (error) {
     if (signal.aborted) {
       throw new Error(
@@ -461,28 +477,6 @@ async function uploadArtifact({ artifact, fetchImpl, request, timeoutMs }) {
     }
     throw error;
   }
-  if (response.ok) {
-    return;
-  }
-  let responseText;
-  try {
-    responseText = await readBoundedResponseText(
-      response,
-      "Mantis upload error",
-      MANTIS_UPLOAD_ERROR_BODY_MAX_BYTES,
-      { signal },
-    );
-  } catch (bodyError) {
-    // Only swallow size-exceeded diagnostics; propagate timeouts and other failures.
-    if (bodyError instanceof Error && bodyError.message.includes("response body exceeded")) {
-      responseText = bodyError.message;
-    } else {
-      throw bodyError;
-    }
-  }
-  throw new Error(
-    `Failed to upload Mantis artifact ${artifact.targetPath}: ${response.status} ${response.statusText}\n${responseText}`,
-  );
 }
 
 export async function publishArtifactFiles({

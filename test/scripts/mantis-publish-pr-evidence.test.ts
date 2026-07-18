@@ -241,11 +241,15 @@ describe("scripts/mantis/publish-pr-evidence", () => {
 
   it("propagates signal abort during non-ok upload error body reading", async () => {
     const manifest = loadEvidenceManifest(writeFixtureManifest());
+    let cancelled = false;
     // A slow-streaming error body that will stall until the signal fires.
     const body = new ReadableStream<Uint8Array>({
       pull() {
         // Never resolves; the signal will abort the read.
         return new Promise(() => {});
+      },
+      cancel() {
+        cancelled = true;
       },
     });
 
@@ -268,27 +272,12 @@ describe("scripts/mantis/publish-pr-evidence", () => {
       timeoutMs: 50,
     });
 
-    // The signal timeout should propagate as an abort/timeout error, not be swallowed
-    // into a generic "Failed to upload" message.
-    await expect(upload).rejects.toThrow();
-    // Verify the error is a TimeoutError (not masked as a size-exceeded diagnostic).
-    try {
-      await upload;
-    } catch (error) {
-      expect(error).toBeInstanceOf(Error);
-      const message = (error as Error).message ?? "";
-      // Must NOT contain the size-exceeded message that only body-too-large errors carry.
-      expect(message).not.toContain("response body exceeded");
-      // The outer uploadArtifact timeout wrapper or the bounded reader's abort path
-      // should surface a timeout or abort indicator.
-      const cause = (error as Error).cause;
-      const isTimeoutOrAbort =
-        message.includes("abort") ||
-        message.includes("Timed out") ||
-        message.includes("timeout") ||
-        (cause instanceof Error && cause.name === "TimeoutError");
-      expect(isTimeoutOrAbort).toBe(true);
-    }
+    await expect(upload).rejects.toMatchObject({
+      cause: { name: "TimeoutError" },
+      message: "Timed out uploading Mantis artifact baseline.png after 50ms.",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(cancelled).toBe(true);
   });
 
   it("reads small non-ok upload error response bodies within the bound", async () => {

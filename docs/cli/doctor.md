@@ -299,6 +299,13 @@ openclaw doctor --session-sqlite compact --session-sqlite-all-agents
 openclaw doctor --session-sqlite recover --github-issue
 ```
 
+Legacy `sessions.json` files at or under 16 MiB are parsed inline. Larger valid
+stores stream top-level session entries (1 MiB per entry, 256 MiB file ceiling)
+so `inspect`, `dry-run`, `import`, and `validate` can still migrate without
+loading the whole file as one JSON string. Stores that exceed the streamed
+ceilings, or that are not a top-level object of session entries, fail closed
+with `store_unreadable`.
+
 Back up the OpenClaw state directory before running `import` on an install with
 important history. `validate` exits non-zero when a selected legacy entry is
 missing from SQLite, a session id differs, or a transcript event count differs.

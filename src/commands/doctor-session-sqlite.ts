@@ -22,6 +22,8 @@ import {
 import type { SessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resolveStoredSessionOwnerAgentId } from "../gateway/session-store-key.js";
+import { streamLegacyJsonTopLevelObjectEntries } from "../infra/legacy-json-object-stream.js";
+import { readRegularFileSync } from "../infra/regular-file.js";
 import { normalizeAgentId } from "../routing/session-key.js";
 import { closeOpenClawAgentDatabaseByPath } from "../state/openclaw-agent-db.js";
 import { compactDoctorSessionSqliteTarget } from "./doctor-session-sqlite-compact.js";
@@ -77,6 +79,14 @@ export type {
   DoctorSessionSqliteTargetReport,
 } from "./doctor-session-sqlite-types.js";
 
+// Inline JSON.parse is safe at or under this size. Larger valid stores stream
+// entry-by-entry so doctor does not allocate the whole file as one string.
+const LEGACY_SESSION_STORE_INLINE_MAX_BYTES = 16 * 1024 * 1024;
+// Per-entry value ceiling while streaming (SessionEntry objects stay small).
+const LEGACY_SESSION_ENTRY_MAX_BYTES = 1 * 1024 * 1024;
+// Absolute streamed-file ceiling; above this doctor still fails closed.
+const LEGACY_SESSION_STORE_STREAM_MAX_BYTES = 256 * 1024 * 1024;
+
 type LegacySessionRecord = {
   entry: SessionEntry;
   sessionKey: string;
@@ -117,7 +127,7 @@ export async function runDoctorSessionSqlite(
       : undefined;
   const fullyCoveredStorePaths =
     options.mode === "import"
-      ? resolveFullyCoveredLegacyStorePaths(cfg, targets)
+      ? await resolveFullyCoveredLegacyStorePaths(cfg, targets)
       : new Set<string>();
   const reports: DoctorSessionSqliteTargetReport[] = [];
   for (const target of targets) {
@@ -216,7 +226,7 @@ async function inspectOrMigrateTarget(params: {
   target: SessionStoreTarget;
 }): Promise<DoctorSessionSqliteTargetReport> {
   const issues: DoctorSessionSqliteIssue[] = [];
-  const allRecords = readLegacySessionRecords(params.target, issues, {
+  const allRecords = await readLegacySessionRecords(params.target, issues, {
     allowMissingStore: params.mode === "inspect" || params.mode === "compact",
   });
   const records = shouldFilterLegacySessionRecordsByTarget(params.target)
@@ -311,10 +321,10 @@ async function inspectOrMigrateTarget(params: {
   return report;
 }
 
-function resolveFullyCoveredLegacyStorePaths(
+async function resolveFullyCoveredLegacyStorePaths(
   cfg: OpenClawConfig,
   targets: readonly SessionStoreTarget[],
-): Set<string> {
+): Promise<Set<string>> {
   const covered = new Set<string>();
   const targetsByStore = new Map<string, SessionStoreTarget[]>();
   for (const target of targets) {
@@ -327,7 +337,7 @@ function resolveFullyCoveredLegacyStorePaths(
       continue;
     }
     const issues: DoctorSessionSqliteIssue[] = [];
-    const records = readLegacySessionRecords(firstStoreTarget, issues);
+    const records = await readLegacySessionRecords(firstStoreTarget, issues);
     const coversEveryRecord = records.every((record) =>
       storeTargets.some(
         (target) =>
@@ -342,14 +352,38 @@ function resolveFullyCoveredLegacyStorePaths(
   return covered;
 }
 
-function readLegacySessionRecords(
+function pushLegacySessionRecord(
+  target: SessionStoreTarget,
+  issues: DoctorSessionSqliteIssue[],
+  records: LegacySessionRecord[],
+  sessionKey: string,
+  value: unknown,
+): void {
+  if (!isSessionEntry(value)) {
+    issues.push({
+      code: "entry_invalid",
+      message: "Session entry is missing a valid sessionId.",
+      sessionKey,
+    });
+    return;
+  }
+  records.push({
+    // Import is the migration boundary: repair legacy delivery/route shapes
+    // here because the SQLite runtime read path assumes canonical entries.
+    entry: normalizeSessionEntryDelivery(value),
+    sessionKey,
+    transcriptPath: resolveLegacyTranscriptPath(target, value),
+  });
+}
+
+async function readLegacySessionRecords(
   target: SessionStoreTarget,
   issues: DoctorSessionSqliteIssue[],
   options: { allowMissingStore?: boolean } = {},
-): LegacySessionRecord[] {
-  let parsed: unknown;
+): Promise<LegacySessionRecord[]> {
+  let storeSize = 0;
   try {
-    parsed = JSON.parse(fs.readFileSync(target.storePath, "utf-8"));
+    storeSize = fs.statSync(target.storePath).size;
   } catch (err) {
     if (
       options.allowMissingStore === true &&
@@ -363,30 +397,67 @@ function readLegacySessionRecords(
     });
     return [];
   }
-  if (!isRecord(parsed)) {
+
+  const records: LegacySessionRecord[] = [];
+
+  if (storeSize <= LEGACY_SESSION_STORE_INLINE_MAX_BYTES) {
+    let parsed: unknown;
+    try {
+      const { buffer } = readRegularFileSync({
+        filePath: target.storePath,
+        maxBytes: LEGACY_SESSION_STORE_INLINE_MAX_BYTES,
+      });
+      parsed = JSON.parse(buffer.toString("utf-8"));
+    } catch (err) {
+      issues.push({
+        code: "store_unreadable",
+        message: `${target.storePath}: ${String(err)}`,
+      });
+      return [];
+    }
+    if (!isRecord(parsed)) {
+      issues.push({
+        code: "store_not_object",
+        message: `${target.storePath} does not contain an object session store.`,
+      });
+      return [];
+    }
+    for (const [sessionKey, value] of Object.entries(parsed)) {
+      pushLegacySessionRecord(target, issues, records, sessionKey, value);
+    }
+    return records;
+  }
+
+  // Oversized but still within the streamed support ceiling: parse top-level
+  // entries without buffering the whole file as one JSON string.
+  try {
+    await streamLegacyJsonTopLevelObjectEntries({
+      filePath: target.storePath,
+      maxEntryBytes: LEGACY_SESSION_ENTRY_MAX_BYTES,
+      maxFileBytes: LEGACY_SESSION_STORE_STREAM_MAX_BYTES,
+      onEntry: (sessionKey, value) => {
+        pushLegacySessionRecord(target, issues, records, sessionKey, value);
+      },
+    });
+  } catch (err) {
+    const errMessage = err instanceof Error ? err.message : String(err);
+    if (errMessage.startsWith("File exceeds")) {
+      issues.push({
+        code: "store_unreadable",
+        message:
+          `${target.storePath}: exceeds a legacy sessions.json streaming limit ` +
+          `(per-entry ${LEGACY_SESSION_ENTRY_MAX_BYTES} bytes / file ` +
+          `${LEGACY_SESSION_STORE_STREAM_MAX_BYTES} bytes). Doctor will not migrate ` +
+          `or import this store until oversized entries or the file are reduced ` +
+          `(back up the file, prune with openclaw sessions cleanup, then retry).`,
+      });
+      return [];
+    }
     issues.push({
-      code: "store_not_object",
-      message: `${target.storePath} does not contain an object session store.`,
+      code: "store_unreadable",
+      message: `${target.storePath}: ${String(err)}`,
     });
     return [];
-  }
-  const records: LegacySessionRecord[] = [];
-  for (const [sessionKey, value] of Object.entries(parsed)) {
-    if (!isSessionEntry(value)) {
-      issues.push({
-        code: "entry_invalid",
-        message: "Session entry is missing a valid sessionId.",
-        sessionKey,
-      });
-      continue;
-    }
-    records.push({
-      // Import is the migration boundary: repair legacy delivery/route shapes
-      // here because the SQLite runtime read path assumes canonical entries.
-      entry: normalizeSessionEntryDelivery(value),
-      sessionKey,
-      transcriptPath: resolveLegacyTranscriptPath(target, value),
-    });
   }
   return records;
 }

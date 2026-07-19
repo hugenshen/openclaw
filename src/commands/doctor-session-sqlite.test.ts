@@ -117,6 +117,105 @@ describe("runDoctorSessionSqlite", () => {
     expect(fs.existsSync(report.targets[0]?.sqlitePath ?? "")).toBe(false);
   });
 
+  for (const mode of ["inspect", "dry-run"] as const) {
+    it(`streams ${mode} when legacy sessions.json exceeds the 16 MiB inline ceiling`, async () => {
+      const store = createLegacyStore();
+      writeOversizedValidLegacyStore(store.storePath, {
+        channel: "cli",
+        chatType: "direct",
+        sessionFile: "session-1.jsonl",
+        sessionId: "session-1",
+        sessionStartedAt: 1000,
+        updatedAt: 2000,
+      });
+      expect(fs.statSync(store.storePath).size).toBeGreaterThan(16 * 1024 * 1024);
+
+      const report = await runDoctorSessionSqlite({
+        env: store.env,
+        mode,
+        store: store.storePath,
+      });
+
+      expect(report.totals.issues).toBe(0);
+      expect(report.totals.legacyEntries).toBeGreaterThan(1);
+      expect(report.targets[0]?.legacyEntries).toBeGreaterThan(1);
+      expect(fs.existsSync(store.storePath)).toBe(true);
+    });
+  }
+
+  it("imports a streamed legacy sessions.json above the 16 MiB inline ceiling", async () => {
+    const store = createLegacyStore();
+    writeOversizedValidLegacyStore(store.storePath, {
+      channel: "cli",
+      chatType: "direct",
+      sessionFile: "session-1.jsonl",
+      sessionId: "session-1",
+      sessionStartedAt: 1000,
+      updatedAt: 2000,
+    });
+
+    const report = await runDoctorSessionSqlite({
+      env: store.env,
+      mode: "import",
+      store: store.storePath,
+    });
+
+    expect(report.totals.issues).toBe(0);
+    expect(report.totals.importedEntries).toBeGreaterThanOrEqual(1);
+    expect(report.totals.legacyEntries).toBeGreaterThan(1);
+    expect(fs.existsSync(report.targets[0]?.sqlitePath ?? "")).toBe(true);
+    expect(
+      loadExactSqliteSessionEntry({
+        agentId: "main",
+        sessionKey: "agent:main:main",
+        storePath: store.storePath,
+      })?.entry.sessionId,
+    ).toBe("session-1");
+  });
+
+  it("fail-closes when a streamed legacy session entry exceeds 1 MiB", async () => {
+    const store = createLegacyStore();
+    writeOversizedLegacyStoreWithHugeEntry(store.storePath);
+    expect(fs.statSync(store.storePath).size).toBeGreaterThan(16 * 1024 * 1024);
+
+    const report = await runDoctorSessionSqlite({
+      env: store.env,
+      mode: "inspect",
+      store: store.storePath,
+    });
+
+    expect(report.totals.legacyEntries).toBe(0);
+    expect(report.targets[0]?.issues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "store_unreadable",
+          message: expect.stringMatching(/streaming limit/s),
+        }),
+      ]),
+    );
+  });
+
+  it("fail-closes when an oversized legacy sessions.json is not valid JSON", async () => {
+    const store = createLegacyStore();
+    fs.writeFileSync(store.storePath, Buffer.alloc(16 * 1024 * 1024 + 1, 0x7b), { mode: 0o600 });
+
+    const report = await runDoctorSessionSqlite({
+      env: store.env,
+      mode: "inspect",
+      store: store.storePath,
+    });
+
+    expect(report.totals.legacyEntries).toBe(0);
+    expect(report.targets[0]?.issues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "store_unreadable",
+        }),
+      ]),
+    );
+    expect(fs.existsSync(report.targets[0]?.sqlitePath ?? "")).toBe(false);
+  });
+
   it("inspects SQLite-only all-agent targets without requiring a legacy store", async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-doctor-session-sqlite-"));
     try {
@@ -2697,6 +2796,57 @@ function createUnsafeIndexDrift(sqlitePath: string): void {
   } finally {
     database.close();
   }
+}
+
+/** Valid top-level sessions.json larger than the 16 MiB inline JSON.parse path. */
+function writeOversizedValidLegacyStore(
+  storePath: string,
+  primaryEntry: Record<string, unknown>,
+): void {
+  const targetBytes = 16 * 1024 * 1024 + 64 * 1024;
+  // Keep each pad entry under LEGACY_SESSION_ENTRY_MAX_BYTES (1 MiB).
+  const padLabel = "x".repeat(900 * 1024);
+  const handle = fs.openSync(storePath, "w", 0o600);
+  let written = 0;
+  const write = (chunk: string) => {
+    written += fs.writeSync(handle, chunk);
+  };
+  write("{\n");
+  write(`"agent:main:main": ${JSON.stringify(primaryEntry)}`);
+  let index = 0;
+  while (written < targetBytes) {
+    write(
+      `,"agent:main:pad-${index}":{"sessionId":"pad-${index}","updatedAt":1,"label":"${padLabel}"}`,
+    );
+    index += 1;
+  }
+  write("\n}\n");
+  fs.closeSync(handle);
+}
+
+/** Force the streaming path with one entry above the 1 MiB per-entry ceiling. */
+function writeOversizedLegacyStoreWithHugeEntry(storePath: string): void {
+  const targetBytes = 16 * 1024 * 1024 + 64 * 1024;
+  const handle = fs.openSync(storePath, "w", 0o600);
+  let written = 0;
+  const write = (chunk: string) => {
+    written += fs.writeSync(handle, chunk);
+  };
+  write("{");
+  write(
+    `"agent:main:huge":{"sessionId":"huge","updatedAt":1,"label":"${"x".repeat(1 * 1024 * 1024 + 32)}"}`,
+  );
+  written = fs.fstatSync(handle).size;
+  let index = 0;
+  while (written < targetBytes) {
+    written += fs.writeSync(
+      handle,
+      `,"agent:main:pad-${index}":{"sessionId":"pad-${index}","updatedAt":1}`,
+    );
+    index += 1;
+  }
+  fs.writeSync(handle, "}");
+  fs.closeSync(handle);
 }
 
 function createLegacyStore(

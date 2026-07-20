@@ -181,10 +181,10 @@ async function probeLocalProviderEndpoint(params: {
     // have the full provider context.
     void response.status;
   } finally {
-    // Status-only probe: cancel the unread body so undici releases the socket.
-    // release() only tears down the SSRF dispatcher; it does not cancel streams.
+    // Start cancelling before dispatcher release, but do not await it: capture
+    // mode can tee the response and keep this branch's cancel promise pending.
     if (!response.bodyUsed) {
-      await response.body?.cancel().catch(() => undefined);
+      void response.body?.cancel().catch(() => undefined);
     }
     await release();
   }

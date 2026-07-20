@@ -45,6 +45,11 @@ type HeartbeatMainSessionRepairCandidate = {
   summary?: TranscriptHeartbeatSummary;
 };
 
+type HeartbeatMainSessionRepairDeclined = {
+  declineReason: "record-too-large";
+  reason?: undefined;
+};
+
 function countLabel(count: number, singular: string, plural = `${singular}s`): string {
   return `${count} ${count === 1 ? singular : plural}`;
 }
@@ -113,9 +118,9 @@ function accumulateTranscriptHeartbeatMessage(
  * Incomplete lines are retained only up to TRANSCRIPT_RECORD_MAX_CHARS; larger
  * records decline classification so repair stays fail-closed.
  */
-function summarizeTranscriptHeartbeatMessages(
+function scanTranscriptHeartbeatMessages(
   transcriptPath: string,
-): TranscriptHeartbeatSummary | null {
+): TranscriptHeartbeatSummary | "record-too-large" | null {
   let fd: number;
   try {
     fd = fs.openSync(transcriptPath, "r");
@@ -143,7 +148,7 @@ function summarizeTranscriptHeartbeatMessages(
       let newline = carry.indexOf("\n");
       while (newline >= 0) {
         if (newline > TRANSCRIPT_RECORD_MAX_CHARS) {
-          return null;
+          return "record-too-large";
         }
         const line = carry.slice(0, newline).replace(/\r$/, "");
         carry = carry.slice(newline + 1);
@@ -151,12 +156,12 @@ function summarizeTranscriptHeartbeatMessages(
         newline = carry.indexOf("\n");
       }
       if (carry.length > TRANSCRIPT_RECORD_MAX_CHARS) {
-        return null;
+        return "record-too-large";
       }
     }
     carry += decoder.end();
     if (carry.length > TRANSCRIPT_RECORD_MAX_CHARS) {
-      return null;
+      return "record-too-large";
     }
     if (carry) {
       accumulateTranscriptHeartbeatMessage(summary, carry.replace(/\r$/, ""));
@@ -165,6 +170,13 @@ function summarizeTranscriptHeartbeatMessages(
     fs.closeSync(fd);
   }
   return summary.inspectedMessages > 0 ? summary : null;
+}
+
+function summarizeTranscriptHeartbeatMessages(
+  transcriptPath: string,
+): TranscriptHeartbeatSummary | null {
+  const scan = scanTranscriptHeartbeatMessages(transcriptPath);
+  return scan === "record-too-large" ? null : scan;
 }
 
 /**
@@ -176,7 +188,7 @@ function summarizeTranscriptHeartbeatMessages(
 function resolveHeartbeatMainSessionRepairCandidate(params: {
   entry: SessionEntry | undefined;
   transcriptPath?: string;
-}): HeartbeatMainSessionRepairCandidate | null {
+}): HeartbeatMainSessionRepairCandidate | HeartbeatMainSessionRepairDeclined | null {
   const { entry, transcriptPath } = params;
   if (!entry) {
     return null;
@@ -192,7 +204,10 @@ function resolveHeartbeatMainSessionRepairCandidate(params: {
   if (!transcriptPath) {
     return null;
   }
-  const summary = summarizeTranscriptHeartbeatMessages(transcriptPath);
+  const summary = scanTranscriptHeartbeatMessages(transcriptPath);
+  if (summary === "record-too-large") {
+    return { declineReason: "record-too-large" };
+  }
   if (!summary) {
     return null;
   }
@@ -290,6 +305,12 @@ export async function repairHeartbeatPoisonedMainSession(params: {
   if (!candidate) {
     return;
   }
+  if ("declineReason" in candidate) {
+    params.warnings.push(
+      `- Skipped heartbeat main-session recovery for ${mainKey}: the transcript contains a JSONL record larger than ${TRANSCRIPT_RECORD_MAX_CHARS} characters, so doctor left it unchanged.`,
+    );
+    return;
+  }
   const recoveredKey = resolveHeartbeatMainRecoveryKey({
     mainKey,
     store: params.store,
@@ -324,7 +345,7 @@ export async function repairHeartbeatPoisonedMainSession(params: {
       entry: currentEntry,
       transcriptPath,
     });
-    if (!currentCandidate) {
+    if (!currentCandidate || "declineReason" in currentCandidate) {
       return;
     }
     if (moveHeartbeatMainSessionEntry({ store: currentStore, mainKey, recoveredKey })) {

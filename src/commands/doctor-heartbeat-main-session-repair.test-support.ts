@@ -20,7 +20,10 @@ type TestApi = {
   resolveHeartbeatMainSessionRepairCandidate(params: {
     entry: SessionEntry | undefined;
     transcriptPath?: string;
-  }): { reason: "metadata" | "transcript"; summary?: TranscriptHeartbeatSummary } | null;
+  }):
+    | { reason: "metadata" | "transcript"; summary?: TranscriptHeartbeatSummary }
+    | { declineReason: "record-too-large"; reason?: undefined }
+    | null;
   summarizeTranscriptHeartbeatMessages(transcriptPath: string): TranscriptHeartbeatSummary | null;
 };
 

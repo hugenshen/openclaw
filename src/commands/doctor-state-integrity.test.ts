@@ -819,9 +819,22 @@ describe("doctor state integrity oauth dir checks", () => {
     const confirmRuntimeRepair = vi.fn(async (params: { message: string }) =>
       params.message.startsWith("Move heartbeat-owned main session"),
     );
-    await noteStateIntegrity(cfg, { confirmRuntimeRepair, note: noteMock });
+    const readFileSyncSpy = vi.spyOn(fs, "readFileSync");
+    try {
+      await noteStateIntegrity(cfg, { confirmRuntimeRepair, note: noteMock });
+    } finally {
+      const transcriptReads = readFileSyncSpy.mock.calls.filter((call) => {
+        const target = call[0];
+        return typeof target === "string" && path.resolve(target) === path.resolve(transcriptPath);
+      });
+      readFileSyncSpy.mockRestore();
+      expect(transcriptReads).toEqual([]);
+    }
 
     expect(summarizeTranscriptHeartbeatMessages(transcriptPath)).toBeNull();
+    expect(stateIntegrityText()).toContain(
+      "Skipped heartbeat main-session recovery for agent:main:main: the transcript contains a JSONL record larger than",
+    );
     expect(hasRepairPromptMessage(confirmRuntimeRepair, "Move heartbeat-owned main session")).toBe(
       false,
     );

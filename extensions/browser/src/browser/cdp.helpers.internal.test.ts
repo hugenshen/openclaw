@@ -157,7 +157,9 @@ describe("cdp.helpers internal", () => {
 
       expect(cancel).toHaveBeenCalledOnce();
       expect(release).toHaveBeenCalledOnce();
-      expect(cancel.mock.invocationCallOrder[0]).toBeLessThan(release.mock.invocationCallOrder[0]);
+      expect(cancel.mock.invocationCallOrder[0]!).toBeLessThan(
+        release.mock.invocationCallOrder[0]!,
+      );
     });
 
     it("registers a managed-proxy bypass for the exact sanitized fetch URL", async () => {

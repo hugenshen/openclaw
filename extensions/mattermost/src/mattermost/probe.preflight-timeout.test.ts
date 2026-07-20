@@ -1,10 +1,15 @@
 // Exercise the real guard: its timeout owns DNS/proxy preflight as well as fetch.
 import type { LookupFn } from "openclaw/plugin-sdk/ssrf-runtime";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { probeMattermost } from "./probe.js";
 
 describe("probeMattermost preflight timeout", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   it("times out when preflight lookup stalls before HTTP dispatch", async () => {
+    vi.stubEnv("OPENCLAW_PROXY_ACTIVE", "0");
     const stalledLookup: LookupFn = (() => new Promise<never>(() => {})) as LookupFn;
     const fetchSpy = vi.fn(async () => new Response("should not run"));
 

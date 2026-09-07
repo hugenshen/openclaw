@@ -178,6 +178,14 @@ export function sanitizeExecApprovalDisplayText(commandText: string): string {
   return sanitizeExecApprovalDisplayTextInternal(commandText).text;
 }
 
+/** Sanitizes approval display text then caps it on a UTF-16-safe boundary. */
+export function sanitizeExecApprovalDisplayTextBounded(
+  commandText: string,
+  maxUtf16Units: number,
+): string {
+  return truncateUtf16Safe(sanitizeExecApprovalDisplayText(commandText), maxUtf16Units);
+}
+
 /**
  * Sanitizes exec command text for approval UI and reports whether size caps changed it.
  */

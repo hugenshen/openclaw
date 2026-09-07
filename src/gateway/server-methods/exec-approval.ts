@@ -18,6 +18,7 @@ import { resolveExecApprovalCommandDisplay } from "../../infra/exec-approval-com
 import type { ExecApprovalForwarder } from "../../infra/exec-approval-forwarder.js";
 import {
   sanitizeExecApprovalDisplayText,
+  sanitizeExecApprovalDisplayTextBounded,
   sanitizeExecApprovalDisplayTextWithStatus,
   sanitizeExecApprovalWarningText,
 } from "../../infra/exec-approval-text-sanitize.js";
@@ -362,8 +363,8 @@ export function createExecApprovalHandlers(
         cronExecutionSource && cronRunExecSource && effectiveCommandText
           ? {
               kind: "standing-grant",
-              automation: sanitizeExecApprovalDisplayText(cronRunExecSource.jobName).slice(0, 128),
-              command: sanitizeExecApprovalDisplayText(effectiveCommandText).slice(0, 256),
+              automation: sanitizeExecApprovalDisplayTextBounded(cronRunExecSource.jobName, 128),
+              command: sanitizeExecApprovalDisplayTextBounded(effectiveCommandText, 256),
               ...(grantDefaultExpiryDays !== null ? { expiresInDays: grantDefaultExpiryDays } : {}),
             }
           : null;
@@ -561,11 +562,11 @@ export function createExecApprovalHandlers(
           agentId: grant.agentId,
           cronJobId: grant.cronJobId,
           cronJobName: grant.cronJobName,
-          command: sanitizeExecApprovalDisplayText(operation?.command ?? "(unreadable)").slice(
-            0,
+          command: sanitizeExecApprovalDisplayTextBounded(
+            operation?.command ?? "(unreadable)",
             512,
           ),
-          cwd: operation?.cwd ? sanitizeExecApprovalDisplayText(operation.cwd).slice(0, 512) : null,
+          cwd: operation?.cwd ? sanitizeExecApprovalDisplayTextBounded(operation.cwd, 512) : null,
           createdAtMs: grant.createdAtMs,
           expiresAtMs: grant.expiresAtMs,
           revokedAtMs: grant.revokedAtMs,

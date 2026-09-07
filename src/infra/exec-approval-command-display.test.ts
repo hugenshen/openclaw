@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { resolveExecApprovalCommandDisplay } from "./exec-approval-command-display.js";
 import {
   sanitizeExecApprovalDisplayText,
+  sanitizeExecApprovalDisplayTextBounded,
   sanitizeExecApprovalWarningText,
 } from "./exec-approval-text-sanitize.js";
 
@@ -310,5 +311,27 @@ describe("resolveExecApprovalCommandDisplay", () => {
     },
   ])("$name", ({ input, expected }) => {
     expect(resolveExecApprovalCommandDisplay(input)).toEqual(expected);
+  });
+});
+
+describe("sanitizeExecApprovalDisplayTextBounded", () => {
+  it("keeps standing-grant and grants-list caps from splitting UTF-16 surrogate pairs", () => {
+    // jobName/command/cwd caps used by exec-approval standing-grant + grants.list.
+    const cases = [
+      { max: 128, label: "automation" },
+      { max: 256, label: "command" },
+      { max: 512, label: "grants-list" },
+    ] as const;
+
+    for (const { max, label } of cases) {
+      const input = `${"a".repeat(max - 1)}😀`;
+      const rawAfterSanitize = sanitizeExecApprovalDisplayText(input).slice(0, max);
+      const bounded = sanitizeExecApprovalDisplayTextBounded(input, max);
+
+      expect(hasLoneSurrogate(rawAfterSanitize), `${label} raw slice`).toBe(true);
+      expect(hasLoneSurrogate(bounded), `${label} bounded`).toBe(false);
+      expect(bounded.length).toBe(max - 1);
+      expect(bounded.endsWith("a")).toBe(true);
+    }
   });
 });

@@ -19,8 +19,8 @@ Results are meant to be pasted into other commands, especially `openclaw message
 - `--json`: output JSON
 - `--limit <n>`: positive integer cap for peers/groups/members listings
 
-`--limit` requires a positive integer. Omit `--limit` for an unbounded listing; explicitly empty
-values are rejected.
+`--limit` requires a positive integer. Omit `--limit` to use the selected channel plugin's default.
+Explicitly empty and whitespace-only values are rejected.
 
 Default output renders IDs and names in a table. Empty list results name the channel and account
 that were queried; JSON list output uses an empty array (`[]`). Failures exit nonzero and use the

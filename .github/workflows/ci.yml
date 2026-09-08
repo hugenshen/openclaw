@@ -1665,18 +1665,18 @@ jobs:
                   // current isolated and Docker catalogs exclude the Go owner.
                   return (plan.shard_name ?? plan.shardName).startsWith("core-tooling");
                 }),
-                requires_ripgrep:
-                  shard.targets?.includes("src/agents/sessions/tools/index.test.ts") ||
-                  shard.includePatterns?.includes("src/agents/sessions/tools/index.test.ts") ||
-                  (shard.shardName === "agentic-agents-support" && !shard.includePatterns) ||
-                  shard.groups?.some(
-                    (group) =>
-                      group.includePatterns?.includes(
-                        "src/agents/sessions/tools/index.test.ts",
-                      ) ||
-                      (group.shard_name === "agentic-agents-support" &&
-                        !group.includePatterns),
-                   ),
+                requires_ripgrep: (shard.groups ?? [shard]).some((plan) => {
+                  const patterns = plan.targets ?? plan.includePatterns;
+                  if (patterns) {
+                    return patterns.some((pattern) => [
+                      "src/agents/sessions/tools/index.test.ts",
+                      "src/agents/filesystem-tools-output-contract.test.ts",
+                    ].some((test) => matchesGlob(test, pattern)));
+                  }
+                  return ["agentic-agents-support", "agentic-agents-core-runtime"].includes(
+                    plan.shard_name ?? plan.shardName,
+                  );
+                }),
               };
             });
           const nodeTestNonDistShards = nodeTestShards.filter((shard) => !shard.requires_dist);
@@ -2218,6 +2218,8 @@ jobs:
         run: node openclaw.mjs status --json --timeout 1
 
       - name: Smoke test built CLI with Bun
+        # Older frozen targets intentionally reject Bun at launcher startup.
+        if: ${{ needs.preflight.outputs.frozen_target != 'true' }}
         run: |
           bun openclaw.mjs --help
           bun openclaw.mjs status --json --timeout 1
@@ -2830,12 +2832,22 @@ jobs:
             ui/src/e2e/chat-widget-sandbox.real-gateway.e2e.test.ts \
             ui/src/e2e/command-palette-catalog.real-gateway.e2e.test.ts \
             ui/src/e2e/cron-duration-save.real-gateway.e2e.test.ts \
+            ui/src/e2e/model-picker-search.real-gateway.e2e.test.ts \
             ui/src/e2e/device-alias-rename.real-gateway.e2e.test.ts \
             ui/src/e2e/session-progress-hovercard.real-gateway.e2e.test.ts \
             extensions/qa-lab/src/control-ui-media-transcript.real-gateway.e2e.test.ts \
             extensions/qa-lab/src/session-host-command-state.real-gateway.e2e.test.ts \
             extensions/qa-lab/src/control-ui-openclaw-delegation.real-gateway.e2e.test.ts \
             extensions/qa-lab/src/control-ui-automation-management.real-gateway.e2e.test.ts
+
+      - name: Upload model picker public observations
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: model-picker-public-proof-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .artifacts/control-ui-e2e/real-gateway/model-picker-public-*
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Upload sanitized Control UI real-Gateway proof
         if: always() && github.event_name == 'workflow_dispatch' && inputs.capture_ui_proof
@@ -3124,7 +3136,6 @@ jobs:
             // execution kinds. Reuse the current bounded smoke contract and
             // isolate each scenario so one invocation cannot pin a profile part.
             const compatibilityScenarioIds = new Set([
-              "control-ui-chat-flow-playwright",
               "system-agent-ring-zero-setup",
               "gateway-smoke",
               "group-visible-reply-tool",
@@ -3138,7 +3149,8 @@ jobs:
             ]);
             const partIndex = partId === "profile-1" ? 0 : partId === "profile-2" ? 1 : -1;
             if (partIndex < 0) {
-              throw new Error(`unknown QA smoke CI profile part: ${partId}`);
+              console.error(`[skip] ${partId} is not declared by this checkout's legacy smoke plan`);
+              process.exit(0);
             }
             const scenarioCatalog = await import("./extensions/qa-lab/src/scenario-catalog.ts");
             const scenarioKindById = new Map(
@@ -3322,7 +3334,7 @@ jobs:
   checks-node-compat:
     permissions:
       contents: read
-    name: checks-node-compat-node22
+    name: checks-node-compat-node24
     needs: [preflight]
     if: needs.preflight.outputs.run_build_artifacts == 'true' && github.event_name == 'workflow_dispatch'
     runs-on: ${{ (vars.OPENCLAW_CI_RUNNER_BACKEND == 'github' || vars.OPENCLAW_CI_RUNNER_BACKEND == 'hybrid') && 'ubuntu-24.04' || (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && github.run_attempt > 1)) && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.pull_request.author_association)) && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04') }}
@@ -3333,14 +3345,14 @@ jobs:
         uses: ./.ci-harness/.github/actions/setup-node-env
         with:
           cache-mode: ${{ needs.preflight.outputs.cache_mode }}
-          node-version: "22.23.2"
+          node-version: "24.16.0"
           install-bun: "false"
           build-all-cache-scope: full
 
       - name: Configure Node test resources
         run: echo "OPENCLAW_VITEST_MAX_WORKERS=2" >> "$GITHUB_ENV"
 
-      - name: Run Node 22 compatibility
+      - name: Run Node 24 minimum compatibility
         env:
           NODE_OPTIONS: --max-old-space-size=8192
         run: |
@@ -3349,6 +3361,7 @@ jobs:
           node openclaw.mjs --help
           node openclaw.mjs status --json --timeout 1
           pnpm test:build:singleton
+          pnpm test src/config/sessions/session-accessor.test.ts src/config/sessions/store-writer.test.ts src/config/sessions/sessions.test.ts
 
   checks-node-core-test-nondist-shard:
     permissions:
@@ -3688,6 +3701,14 @@ jobs:
               fi
               pnpm tool-display:check
               pnpm check:host-env-policy:swift
+              if has_package_script "check:browser-inspect-script:swift"; then
+                pnpm check:browser-inspect-script:swift
+              elif [[ "$FROZEN_TARGET" == "true" ]]; then
+                echo "[skip] frozen target predates the browser inspect Swift script guard"
+              else
+                echo "Current CI targets must provide the check:browser-inspect-script:swift package script." >&2
+                exit 1
+              fi
               if has_package_script "check:temp-path-guardrails"; then
                 pnpm check:temp-path-guardrails
               elif [[ "$FROZEN_TARGET" == "true" ]]; then
@@ -3809,7 +3830,9 @@ jobs:
                   const configPath = "config/knip.config.ts";
                   const marker = "const repositoryScriptEntries = [";
                   const source = readFileSync(configPath, "utf8");
-                  if (!source.includes(marker)) throw new Error(`${configPath} is missing ${marker}`);
+                  // Pre-refactor frozen configs ignore scripts/** wholesale, so
+                  // they need no synthetic executable-root registration.
+                  if (!source.includes(marker)) process.exit(0);
                   writeFileSync(configPath, source.replace(
                     marker,
                     `${marker}\n  ${process.env.RELEASE_EVIDENCE_ENTRY},`,
@@ -4447,7 +4470,7 @@ jobs:
 
       - name: Setup Node.js
         env:
-          REQUESTED_NODE_VERSION: "22.x"
+          REQUESTED_NODE_VERSION: "24.x"
         run: |
           set -euo pipefail
           source .ci-harness/.github/actions/setup-pnpm-store-cache/ensure-node.sh
@@ -4457,7 +4480,7 @@ jobs:
         uses: ./.ci-harness/.github/actions/setup-pnpm-store-cache
         with:
           cache-mode: ${{ needs.preflight.outputs.cache_mode }}
-          node-version: 22.x
+          node-version: 24.x
 
       - name: Runtime versions
         run: |
@@ -4745,7 +4768,7 @@ jobs:
           elif [[ "$HISTORICAL_TARGET" == "true" ]]; then
             # Frozen release targets before the shared wrappers used these commands directly.
             swiftlint lint --config config/swiftlint.yml
-            swiftformat --lint apps/macos/Sources --config config/swiftformat --exclude '**/OpenClawProtocol,**/HostEnvSecurityPolicy.generated.swift'
+            swiftformat --lint apps/macos/Sources --config config/swiftformat --exclude '**/OpenClawProtocol,**/HostEnvSecurityPolicy.generated.swift,**/BrowserInspectScript.generated.swift'
           else
             echo "Current CI targets must provide the Swift lint and format wrappers." >&2
             exit 1

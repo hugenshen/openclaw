@@ -2780,6 +2780,95 @@ dispatch_workflow_at_ref "$WORKFLOW_REF" "$PARENT_WORKFLOW_SHA" plugin-clawhub-r
     );
   });
 
+  it.each([
+    [
+      PLUGIN_NPM_RELEASE_WORKFLOW,
+      "preview_plugins_npm",
+      "Checkout trusted planning tooling",
+      "Validate publishable plugin metadata",
+      ".release-tooling",
+      "${{ github.workflow_sha }}",
+    ],
+    [
+      PLUGIN_NPM_RELEASE_WORKFLOW,
+      "preview_plugin_pack",
+      "Checkout trusted packaging tooling",
+      "Prepare immutable npm preflight artifact",
+      ".release-tooling",
+      "${{ github.workflow_sha }}",
+    ],
+    [
+      PLUGIN_CLAWHUB_RELEASE_WORKFLOW,
+      "preview_plugins_clawhub",
+      "Checkout trusted planning tooling",
+      "Validate publishable plugin metadata",
+      ".release-tooling",
+      "${{ github.workflow_sha }}",
+    ],
+    [
+      ".github/workflows/plugin-clawhub-new.yml",
+      "resolve_bootstrap_plan",
+      "Checkout trusted planning tooling",
+      "Validate publishable plugin metadata",
+      ".release-tooling",
+      "${{ github.workflow_sha }}",
+    ],
+    [
+      ".github/workflows/plugin-clawhub-new.yml",
+      "pack_bootstrap_plugins",
+      "Checkout trusted workflow tooling",
+      "Pack immutable ClawHub bootstrap artifacts",
+      ".release-harness",
+      "${{ github.sha }}",
+    ],
+  ])(
+    "initializes independent plugin tooling before %s/%s",
+    (file, jobName, checkoutName, consumerName, toolingPath, toolingRef) => {
+      const job = workflowJob(file, jobName);
+      const checkout = workflowStep(job, checkoutName);
+      const setup = workflowStep(job, "Setup Node environment");
+      const install = workflowStep(job, "Install trusted plugin tooling dependencies");
+      const consumer = workflowStep(job, consumerName);
+      expect(checkout.with).toMatchObject({
+        ref: toolingRef,
+        path: toolingPath,
+        "persist-credentials": false,
+      });
+      expect(checkout.with?.["sparse-checkout"]).toBeUndefined();
+      expect(install["working-directory"]).toBe(toolingPath);
+      expect(install.env).toMatchObject({ CI: "true" });
+      expect(install.run).toBe("pnpm install --frozen-lockfile --prefer-offline --ignore-scripts");
+      expect(job.steps!.indexOf(install)).toBeGreaterThan(job.steps!.indexOf(checkout));
+      expect(job.steps!.indexOf(install)).toBeGreaterThan(job.steps!.indexOf(setup));
+      expect(job.steps!.indexOf(install)).toBeLessThan(job.steps!.indexOf(consumer));
+      const root = tempDirs.make("plugin-tooling-install-");
+      const tooling = join(root, toolingPath);
+      const bin = join(root, "bin");
+      mkdirSync(tooling);
+      mkdirSync(bin);
+      writeFileSync(join(root, "candidate-sentinel"), "unchanged");
+      writeFileSync(
+        join(bin, "pnpm"),
+        `#!${process.execPath}
+const fs=require("node:fs");fs.writeFileSync("install-proof.json",JSON.stringify({cwd:process.cwd(),args:process.argv.slice(2),ci:process.env.CI}));
+`,
+        { mode: 0o755 },
+      );
+      const result = spawnSync("bash", ["-euo", "pipefail", "-c", install.run!], {
+        cwd: tooling,
+        encoding: "utf8",
+        env: { ...process.env, ...install.env, PATH: `${bin}:${process.env.PATH}` },
+      });
+      expect(result.status, result.stderr).toBe(0);
+      expect(JSON.parse(readFileSync(join(tooling, "install-proof.json"), "utf8"))).toMatchObject({
+        args: ["install", "--frozen-lockfile", "--prefer-offline", "--ignore-scripts"],
+        ci: "true",
+      });
+      expect(existsSync(join(root, "install-proof.json"))).toBe(false);
+      expect(readFileSync(join(root, "candidate-sentinel"), "utf8")).toBe("unchanged");
+    },
+  );
+
   it("runs plugin npm preflight trust from the exact workflow tooling checkout", () => {
     const job = workflowJob(PLUGIN_NPM_RELEASE_WORKFLOW, "preview_plugins_npm");
     const checkout = workflowStep(job, "Checkout trusted planning tooling");
@@ -3096,6 +3185,8 @@ render_github_release_notes() { cp "$2" "$1"; printf '%s\\n' '{"verificationIncl
     );
     mkdirSync(join(fixture.root, "dependency-evidence"));
     writeFileSync(join(fixture.root, "dependency-evidence/report.json"), "{}");
+    writeFileSync(join(fixture.root, "dependency-evidence/npm-package-locks.json"), "{}");
+    writeFileSync(join(fixture.root, "dependency-evidence/npm-package-locks.md"), "# npm locks\n");
     writeFileSync(
       join(fixture.root, "release-postpublish-evidence.json"),
       JSON.stringify({
@@ -3118,7 +3209,11 @@ render_github_release_notes() { cp "$2" "$1"; printf '%s\\n' '{"verificationIncl
       stepEnv(workflowStep(publish, "Complete publish workflows")),
     );
     expect.soft(evidence.status, evidence.stderr).toBe(0);
-    expect.soft(fixture.events()).toContain("asset:dependency-evidence/report.json");
+    expect
+      .soft(fixture.events().join("\n"))
+      .toContain(
+        "asset:dependency-evidence/npm-package-locks.json\ndependency-evidence/npm-package-locks.md\ndependency-evidence/report.json",
+      );
 
     const core = workflowStep(publish, "Start core npm publication");
     const dispatched = fixture.run(core, stepEnv(core));
@@ -4139,16 +4234,30 @@ NODE
     const existingZip = `${tempDir}/existing.zip`;
     const symlinkZip = `${tempDir}/symlink.zip`;
     const corruptZip = `${tempDir}/corrupt.zip`;
+    const npmLocks = `${JSON.stringify({ packages: [{ lock: "x".repeat(3 * 1024 * 1024) }] })}\n`;
+    const evidenceNames = ["proof.json", "npm-package-locks.json", "npm-package-locks.md"].map(
+      (name) => `dependency-evidence/${name}`,
+    );
     for (const dir of [sourceDir, existingDir]) {
       mkdirSync(`${dir}/dependency-evidence`, { recursive: true });
       writeFileSync(`${dir}/dependency-evidence/proof.json`, '{"ok":true}\n');
+      writeFileSync(`${dir}/dependency-evidence/npm-package-locks.json`, npmLocks);
+      writeFileSync(`${dir}/dependency-evidence/npm-package-locks.md`, "# npm locks\n");
     }
-    execFileSync("touch", ["-t", "198001010000", `${sourceDir}/dependency-evidence/proof.json`]);
-    execFileSync("touch", ["-t", "202001010000", `${existingDir}/dependency-evidence/proof.json`]);
-    execFileSync("zip", ["-X", "-q", sourceZip, "dependency-evidence/proof.json"], {
+    execFileSync("touch", [
+      "-t",
+      "198001010000",
+      ...evidenceNames.map((name) => `${sourceDir}/${name}`),
+    ]);
+    execFileSync("touch", [
+      "-t",
+      "202001010000",
+      ...evidenceNames.map((name) => `${existingDir}/${name}`),
+    ]);
+    execFileSync("zip", ["-X", "-q", sourceZip, ...evidenceNames], {
       cwd: sourceDir,
     });
-    execFileSync("zip", ["-X", "-q", existingZip, "dependency-evidence/proof.json"], {
+    execFileSync("zip", ["-X", "-q", existingZip, ...evidenceNames], {
       cwd: existingDir,
     });
     symlinkSync("../../outside", `${existingDir}/dependency-evidence/link`);
@@ -4168,6 +4277,11 @@ NODE
     const corruptResult = compare(corruptZip, corruptZip);
 
     expect(result.status, result.stderr).toBe(0);
+    writeFileSync(`${existingDir}/dependency-evidence/npm-package-locks.json`, `${npmLocks} `);
+    execFileSync("zip", ["-X", "-q", existingZip, "dependency-evidence/npm-package-locks.json"], {
+      cwd: existingDir,
+    });
+    expect(compare(sourceZip, existingZip).status).toBe(1);
     expect(symlinkResult.status).toBe(1);
     expect(symlinkResult.stderr).toContain("unsupported dependency evidence archive entry");
     expect(corruptResult.status).toBe(1);
@@ -5997,6 +6111,10 @@ describe("package artifact reuse", () => {
     ).toContain("steps.prepublish_plugin_registry.outputs.manifest_sha256 != ''");
     for (const jobId of ["validate_docker_e2e", "validate_docker_lanes"]) {
       const job = workflowJob(LIVE_E2E_WORKFLOW, jobId);
+      expect(job.env).toMatchObject({
+        OPENCLAW_SELECTED_SHA: "${{ needs.validate_selected_ref.outputs.selected_sha }}",
+        OPENCLAW_TOOLING_SHA: "${{ needs.validate_selected_ref.outputs.workflow_sha }}",
+      });
       const registrySteps = (job.steps ?? []).filter((step) =>
         /^(Validate|Download) .*prerelease plugin registry/u.test(step.name ?? ""),
       );
@@ -6849,11 +6967,32 @@ describe("package artifact reuse", () => {
   it("shards broad native live tests instead of one serial live-all job", () => {
     const workflow = readFileSync(LIVE_E2E_WORKFLOW, "utf8");
     const retryHelper = readFileSync("scripts/ci-live-command-retry.sh", "utf8");
+    const nativeLiveJob = workflowJob(LIVE_E2E_WORKFLOW, "validate_live_provider_suites");
+    const selection = workflowStep(nativeLiveJob, "Select native live suite");
 
     expect(workflow).not.toContain("suite_id: live-all");
     expect(workflow).not.toContain("command: pnpm test:live\n");
     expect(workflow).toContain("suite_id: native-live-src-agents");
     expect(workflow).toContain("Checkout trusted live shard harness");
+    expect(selection.if).toContain("contains(matrix.profiles, inputs.release_test_profile)");
+    expect(selection.if).toContain("inputs.live_suite_filter == matrix.suite_id");
+    for (const stepName of [
+      "Checkout selected ref",
+      "Checkout trusted live shard harness",
+      "Setup Node environment",
+      "Setup trusted release harness",
+      "Hydrate live auth/profile inputs",
+      "Configure suite-specific env",
+      "Run ${{ matrix.label }}",
+    ]) {
+      expect(workflowStep(nativeLiveJob, stepName).if).toBe(
+        "steps.selection.outputs.run == 'true'",
+      );
+    }
+    expect(workflowStep(nativeLiveJob, "Setup trusted release harness")).toMatchObject({
+      uses: "./.release-harness/.github/actions/setup-release-harness",
+      with: { "node-version": "${{ env.NODE_VERSION }}" },
+    });
     expect(
       workflowMatrixEntry(
         LIVE_E2E_WORKFLOW,

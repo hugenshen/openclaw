@@ -553,10 +553,7 @@ export class VoiceCallWebhookServer {
           if (path === streamPath && this.mediaStreamHandler) {
             this.mediaStreamHandler?.handleUpgrade(request, socket, head);
           } else {
-            // Unmatched upgrade paths must flush a readable HTTP rejection before
-            // tear-down; bare destroy drops the status on buffered/reused sockets.
-            // Swallow peer-reset errors so unauthenticated rejects cannot become
-            // process-level unhandled "error" events.
+            // HTTP relinquishes upgraded sockets; own errors while the 404 flushes.
             socket.once("error", () => {});
             rejectWebSocketUpgrade(socket, { status: 404 });
           }

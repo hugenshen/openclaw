@@ -9976,6 +9976,7 @@ public struct SessionsCreateParams: Codable, Sendable {
     public let forkfrom: String?
     public let emitcommandhooks: Bool?
     public let succeedsparent: Bool?
+    public let timeoutms: Int?
     public let task: String?
     public let message: String?
     public let mentions: [HumanMention]?
@@ -10011,6 +10012,7 @@ public struct SessionsCreateParams: Codable, Sendable {
         forkfrom: String? = nil,
         emitcommandhooks: Bool? = nil,
         succeedsparent: Bool? = nil,
+        timeoutms: Int? = nil,
         task: String? = nil,
         message: String? = nil,
         mentions: [HumanMention]? = nil,
@@ -10045,6 +10047,7 @@ public struct SessionsCreateParams: Codable, Sendable {
         self.forkfrom = forkfrom
         self.emitcommandhooks = emitcommandhooks
         self.succeedsparent = succeedsparent
+        self.timeoutms = timeoutms
         self.task = task
         self.message = message
         self.mentions = mentions
@@ -10081,6 +10084,7 @@ public struct SessionsCreateParams: Codable, Sendable {
         case forkfrom = "forkFrom"
         case emitcommandhooks = "emitCommandHooks"
         case succeedsparent = "succeedsParent"
+        case timeoutms = "timeoutMs"
         case task
         case message
         case mentions
@@ -15986,6 +15990,7 @@ public struct AgentsFileEntry: Codable, Sendable {
     public let expectedabsent: Bool?
     public let size: Int?
     public let updatedatms: Int?
+    public let hash: String?
     public let content: String?
 
     public init(
@@ -15995,6 +16000,7 @@ public struct AgentsFileEntry: Codable, Sendable {
         expectedabsent: Bool? = nil,
         size: Int? = nil,
         updatedatms: Int? = nil,
+        hash: String? = nil,
         content: String? = nil)
     {
         self.name = name
@@ -16003,6 +16009,7 @@ public struct AgentsFileEntry: Codable, Sendable {
         self.expectedabsent = expectedabsent
         self.size = size
         self.updatedatms = updatedatms
+        self.hash = hash
         self.content = content
     }
 
@@ -16013,6 +16020,7 @@ public struct AgentsFileEntry: Codable, Sendable {
         case expectedabsent = "expectedAbsent"
         case size
         case updatedatms = "updatedAtMs"
+        case hash
         case content
     }
 }
@@ -16097,21 +16105,25 @@ public struct AgentsFilesSetParams: Codable, Sendable {
     public let agentid: String
     public let name: String
     public let content: String
+    public let expectedhash: String?
 
     public init(
         agentid: String,
         name: String,
-        content: String)
+        content: String,
+        expectedhash: String? = nil)
     {
         self.agentid = agentid
         self.name = name
         self.content = content
+        self.expectedhash = expectedhash
     }
 
     private enum CodingKeys: String, CodingKey {
         case agentid = "agentId"
         case name
         case content
+        case expectedhash = "expectedHash"
     }
 }
 
@@ -16693,6 +16705,8 @@ public struct ModelsAuthStatusParams: Codable, Sendable {
 
 public struct ModelsListParams: Codable, Sendable {
     public let agentid: String?
+    public let sessionkey: String?
+    public let authprofileid: String?
     public let provider: String?
     public let includedetails: Bool?
     public let includeprovidercapabilities: Bool?
@@ -16702,6 +16716,8 @@ public struct ModelsListParams: Codable, Sendable {
 
     public init(
         agentid: String? = nil,
+        sessionkey: String? = nil,
+        authprofileid: String? = nil,
         provider: String? = nil,
         includedetails: Bool? = nil,
         includeprovidercapabilities: Bool? = nil,
@@ -16710,6 +16726,8 @@ public struct ModelsListParams: Codable, Sendable {
         view: AnyCodable? = nil)
     {
         self.agentid = agentid
+        self.sessionkey = sessionkey
+        self.authprofileid = authprofileid
         self.provider = provider
         self.includedetails = includedetails
         self.includeprovidercapabilities = includeprovidercapabilities
@@ -16720,6 +16738,8 @@ public struct ModelsListParams: Codable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case agentid = "agentId"
+        case sessionkey = "sessionKey"
+        case authprofileid = "authProfileId"
         case provider
         case includedetails = "includeDetails"
         case includeprovidercapabilities = "includeProviderCapabilities"
@@ -16731,18 +16751,26 @@ public struct ModelsListParams: Codable, Sendable {
 
 public struct ModelsListResult: Codable, Sendable {
     public let models: [ModelChoice]
+    public let refreshfailed: Bool?
+    public let accountselection: ChatAccountSelection?
     public let provideroutcomes: [[String: AnyCodable]]?
 
     public init(
         models: [ModelChoice],
+        refreshfailed: Bool? = nil,
+        accountselection: ChatAccountSelection? = nil,
         provideroutcomes: [[String: AnyCodable]]? = nil)
     {
         self.models = models
+        self.refreshfailed = refreshfailed
+        self.accountselection = accountselection
         self.provideroutcomes = provideroutcomes
     }
 
     private enum CodingKeys: String, CodingKey {
         case models
+        case refreshfailed = "refreshFailed"
+        case accountselection = "accountSelection"
         case provideroutcomes = "providerOutcomes"
     }
 }

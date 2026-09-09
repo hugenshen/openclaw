@@ -25,6 +25,8 @@ import { createChatSubmissions } from "../../app/chat-submissions.ts";
 import type { ApplicationContext } from "../../app/context.ts";
 import type { ApplicationPlacementStartupStatus } from "../../app/session-placement-startup.ts";
 import { loadSettings } from "../../app/settings.ts";
+import type { MarkdownRenderOptions } from "../../components/markdown-render-options.ts";
+import { createAgentIdentityCapability } from "../../lib/agents/identity.ts";
 import type { CatalogSessionKey } from "../../lib/sessions/catalog-key.ts";
 import type { SessionCapability } from "../../lib/sessions/index.ts";
 import "./chat-pane.ts";
@@ -92,6 +94,7 @@ export type TestChatPane = HTMLElement & {
   refreshSessionPullRequests: (options?: { refresh?: boolean }) => boolean;
   sessionPullRequests: ControlUiSessionPullRequest[];
   sessionPullRequestsBranch: ControlUiSessionBranch | undefined;
+  githubRepo: MarkdownRenderOptions["githubRepo"];
   taskSuggestions: TaskSuggestion[];
   presencePayload?: { presence: unknown[] };
   sessionSuggestionAddOperation: symbol | undefined;
@@ -198,13 +201,15 @@ export function createGatewayBrowserClientFixture(
   return client;
 }
 
-function withLivePreferences(context: Omit<ApplicationContext, "theme">): ApplicationContext {
+function withLivePreferences(
+  context: Omit<ApplicationContext, "theme" | "agentIdentity">,
+): ApplicationContext {
   const theme = createApplicationTheme(
     loadSettings(context.gateway.connection.gatewayUrl),
     context.gateway,
   );
   onTestFinished(() => theme.dispose());
-  return { ...context, theme };
+  return { ...context, theme, agentIdentity: createAgentIdentityCapability(context.gateway) };
 }
 
 export function createInitializationContext(): ApplicationContext {
@@ -264,7 +269,7 @@ export function createInitializationContext(): ApplicationContext {
     chatSubmissions: createChatSubmissions(),
     chatAttachmentHandoff: createChatAttachmentHandoff(),
     sessions: { state: { modelOverrides: {} } },
-  } as unknown as Omit<ApplicationContext, "theme">);
+  } as unknown as Omit<ApplicationContext, "theme" | "agentIdentity">);
 }
 
 export function nativeHistoryMessage(seq: number, text = `message ${seq}`) {
@@ -353,7 +358,7 @@ export function createSessionContext(
     nativeChatDrafts: { subscribe: () => () => undefined },
     placementStartup: { get: vi.fn(() => null), hasPendingTurn: () => false, pause: vi.fn() },
     sessions,
-  } as unknown as Omit<ApplicationContext, "theme">);
+  } as unknown as Omit<ApplicationContext, "theme" | "agentIdentity">);
 }
 
 export function createTestChatPane(params: {
@@ -492,6 +497,10 @@ class RenderTestChatPane extends ChatPane {
 
   override applySessionsState(state: ApplicationContext["sessions"]["state"]) {
     super.applySessionsState(state);
+  }
+
+  override refreshSessionPullRequests(options: { refresh?: boolean } = {}) {
+    return super.refreshSessionPullRequests(options);
   }
 }
 

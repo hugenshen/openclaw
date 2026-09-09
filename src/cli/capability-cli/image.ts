@@ -4,7 +4,6 @@ import { normalizeOptionalString } from "@openclaw/normalization-core/string-coe
 import type { Command } from "commander";
 import { resolveAgentDir } from "../../agents/agent-scope.js";
 import { runWithImageModelFallback } from "../../agents/model-fallback-image.js";
-import { getRuntimeConfig } from "../../config/config.js";
 import { resolveAgentModelPrimaryValue } from "../../config/model-input.js";
 import {
   generateImage,
@@ -35,6 +34,7 @@ import {
   parseOptionalPositiveInteger,
   parseOptionalTimeoutMs,
   providerHasGenericConfig,
+  registerLocalProvidersCommand,
   requireProviderModelOverride,
   resolveCapabilityAgentOption,
   resolveCapabilityProviderAgentId,
@@ -44,7 +44,7 @@ import {
 
 const IMAGE_OUTPUT_FORMATS = ["png", "jpeg", "webp"] as const;
 const IMAGE_BACKGROUNDS = ["transparent", "opaque", "auto"] as const;
-const IMAGE_QUALITIES = ["low", "medium", "high", "auto"] as const;
+const IMAGE_QUALITIES = ["low", "medium", "high", "xhigh", "max", "auto"] as const;
 const IMAGE_MODERATIONS = ["low", "auto"] as const;
 const parseImageOption = createEnumOptionParser();
 
@@ -247,7 +247,7 @@ function addImageGenerationOptions(command: Command): Command {
     .option("--background <value>", "Background hint: transparent, opaque, or auto")
     .option("--openai-background <value>", "OpenAI background hint: transparent, opaque, or auto")
     .option("--openai-moderation <value>", "OpenAI moderation hint: low or auto")
-    .option("--quality <value>", "Quality hint: low, medium, high, or auto")
+    .option("--quality <value>", "Quality hint: low, medium, high, xhigh, max, or auto")
     .option("--timeout-ms <ms>", "Provider request timeout in milliseconds")
     .option("--output <path>", "Output path")
     .option(
@@ -376,34 +376,26 @@ export function registerImageCapabilityCommands(capability: Command): void {
       });
     });
 
-  image
-    .command("providers")
-    .description("List image generation providers")
-    .option("--agent <id>", "Agent whose provider state should be inspected")
-    .option("--json", "Output JSON", false)
-    .action(async (opts, command) => {
-      await runCommandWithRuntime(defaultRuntime, async () => {
-        const cfg = getRuntimeConfig();
-        const agentId = resolveCapabilityProviderAgentId(
-          cfg,
-          resolveCapabilityAgentOption(command, opts.agent),
-        );
-        const selectedProvider = resolveSelectedProviderFromModelRef(
-          resolveAgentModelPrimaryValue(cfg.agents?.defaults?.mediaModels?.image),
-        );
-        const result = listRuntimeImageGenerationProviders({ config: cfg }).map((provider) => ({
-          available: true,
-          configured:
-            selectedProvider === provider.id ||
-            providerHasGenericConfig({ cfg, providerId: provider.id, agentId }),
-          selected: selectedProvider === provider.id,
-          id: provider.id,
-          label: provider.label,
-          defaultModel: provider.defaultModel,
-          models: provider.models ?? [],
-          capabilities: provider.capabilities,
-        }));
-        emitJsonOrText(defaultRuntime, Boolean(opts.json), result, providerSummaryText);
-      });
-    });
+  registerLocalProvidersCommand(
+    image,
+    "List image generation providers",
+    (cfg, agentId) => {
+      const selectedProvider = resolveSelectedProviderFromModelRef(
+        resolveAgentModelPrimaryValue(cfg.agents?.defaults?.mediaModels?.image),
+      );
+      return listRuntimeImageGenerationProviders({ config: cfg }).map((provider) => ({
+        available: true,
+        configured:
+          selectedProvider === provider.id ||
+          providerHasGenericConfig({ cfg, providerId: provider.id, agentId }),
+        selected: selectedProvider === provider.id,
+        id: provider.id,
+        label: provider.label,
+        defaultModel: provider.defaultModel,
+        models: provider.models ?? [],
+        capabilities: provider.capabilities,
+      }));
+    },
+    providerSummaryText,
+  );
 }

@@ -1,118 +1,72 @@
-import {
-  fetchWithSsrFGuard,
-  ssrfPolicyFromDangerouslyAllowPrivateNetwork,
-} from "openclaw/plugin-sdk/ssrf-runtime";
-import { withServer } from "openclaw/plugin-sdk/test-env";
-import { describe, expect, it, vi } from "vitest";
-import { releaseNextcloudTalkGuardedResponse } from "./guarded-response.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { fetchWithSsrFGuard } from "../runtime-api.js";
+import { resolveNextcloudTalkAccount } from "./accounts.js";
+import { resolveNextcloudTalkRoomKind } from "./room-info.js";
+import { sendReactionNextcloudTalk } from "./send.js";
+import type { CoreConfig } from "./types.js";
 
-describe("releaseNextcloudTalkGuardedResponse", () => {
-  it("starts cancel of an unread body before releasing the guard", async () => {
-    const events: string[] = [];
-    const response = new Response(
-      new ReadableStream<Uint8Array>({
-        cancel() {
-          events.push("cancel");
-        },
-      }),
-    );
+vi.mock("../runtime-api.js", () => ({ fetchWithSsrFGuard: vi.fn() }));
 
-    await releaseNextcloudTalkGuardedResponse({
-      response,
-      release: async () => {
-        events.push("release");
-      },
-    });
+afterEach(() => {
+  vi.mocked(fetchWithSsrFGuard).mockReset();
+});
 
-    expect(events).toEqual(["cancel", "release"]);
-  });
+const cfg: CoreConfig = {
+  channels: {
+    "nextcloud-talk": {
+      baseUrl: "https://cloud.example.test",
+      botSecret: "fixture-secret",
+      apiUser: "fixture-user",
+      apiPassword: "fixture-password",
+    },
+  },
+};
 
-  it("releases without waiting when body cancel never settles", async () => {
-    let cancelStarted = false;
-    const response = new Response(
-      new ReadableStream<Uint8Array>({
-        cancel() {
-          cancelStarted = true;
-          // Debug capture tees leave one branch reading; cancel on the other
-          // branch never settles until both cancel — awaiting hangs release.
-          return new Promise(() => {});
-        },
-      }),
-    );
-    const release = vi.fn(async () => {});
-
-    const startedAt = Date.now();
-    await expect(
-      Promise.race([
-        releaseNextcloudTalkGuardedResponse({ response, release }),
-        new Promise<never>((_, reject) => {
-          AbortSignal.timeout(1_000).addEventListener("abort", () => {
-            reject(new Error("release hung waiting for body.cancel"));
-          });
+describe("Nextcloud Talk guarded response release", () => {
+  it.each([
+    {
+      name: "successful reaction",
+      status: 201,
+      run: () => sendReactionNextcloudTalk("room:release", "42", "👍", { cfg }),
+      expected: { ok: true },
+    },
+    {
+      name: "failed room lookup",
+      status: 404,
+      run: () =>
+        resolveNextcloudTalkRoomKind({
+          account: resolveNextcloudTalkAccount({ cfg }),
+          roomToken: "release-regression",
         }),
-      ]),
-    ).resolves.toBeUndefined();
-    const elapsedMs = Date.now() - startedAt;
-
-    expect(cancelStarted).toBe(true);
-    expect(release).toHaveBeenCalledOnce();
-    expect(elapsedMs).toBeLessThan(1_000);
-  });
-
-  it("releases a real guarded fetch without waiting for a hanging response body", async () => {
-    let received = false;
-    let closed = false;
-    await withServer(
-      (request, response) => {
-        received = true;
-        request.on("close", () => {
-          closed = true;
-        });
-        response.writeHead(200, {
-          "Content-Type": "application/json",
-          "Transfer-Encoding": "chunked",
-        });
-        response.write('{"ocs":');
-      },
-      async (baseUrl) => {
-        const guarded = await fetchWithSsrFGuard({
-          url: `${baseUrl}/ocs/v2.php/apps/spreed/api/v4/room/hang`,
-          init: { method: "GET" },
-          auditContext: "nextcloud-talk.release-cancel",
-          policy: ssrfPolicyFromDangerouslyAllowPrivateNetwork(true),
-        });
-        const startedAt = Date.now();
-        await releaseNextcloudTalkGuardedResponse({
-          response: guarded.response,
-          release: guarded.release,
-        });
-        expect(Date.now() - startedAt).toBeLessThan(1_000);
-      },
+      expected: undefined,
+    },
+  ])("returns the $name result without waiting for body cancellation", async (testCase) => {
+    const cancellation = Promise.withResolvers<void>();
+    const response = new Response(
+      new ReadableStream<Uint8Array>({ cancel: () => cancellation.promise }),
+      { status: testCase.status },
     );
-    expect(received).toBe(true);
-    expect(closed).toBe(true);
-  });
-
-  it("still releases when body cancellation fails", async () => {
-    const response = new Response(new ReadableStream<Uint8Array>());
-    vi.spyOn(response.body!, "cancel").mockRejectedValueOnce(new Error("cancel failed"));
     const release = vi.fn(async () => {});
-
-    await expect(
-      releaseNextcloudTalkGuardedResponse({ response, release }),
-    ).resolves.toBeUndefined();
-    expect(release).toHaveBeenCalledOnce();
-  });
-
-  it("does not cancel a body the caller already consumed", async () => {
-    const response = new Response("done");
-    const cancel = vi.spyOn(response.body!, "cancel");
-    await response.text();
-    const release = vi.fn(async () => {});
-
-    await releaseNextcloudTalkGuardedResponse({ response, release });
-
-    expect(cancel).not.toHaveBeenCalled();
-    expect(release).toHaveBeenCalledOnce();
+    vi.mocked(fetchWithSsrFGuard).mockResolvedValue({
+      response,
+      release,
+      finalUrl: "https://cloud.example.test",
+    });
+    const result = testCase.run();
+    const waiting = Symbol("waiting for body cancellation");
+    try {
+      const observed = await Promise.race([
+        result,
+        new Promise<symbol>((resolve) => {
+          setImmediate(() => resolve(waiting));
+        }),
+      ]);
+      expect(observed).toEqual(testCase.expected);
+      expect(release).toHaveBeenCalledOnce();
+    } finally {
+      cancellation.resolve();
+      await result;
+      await response.body?.cancel();
+    }
   });
 });

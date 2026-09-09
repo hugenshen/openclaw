@@ -1,3 +1,4 @@
+import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fetchWithSsrFGuard } from "../runtime-api.js";
 import { resolveNextcloudTalkAccount } from "./accounts.js";
@@ -41,7 +42,7 @@ describe("Nextcloud Talk guarded response release", () => {
       expected: undefined,
     },
   ])("returns the $name result without waiting for body cancellation", async (testCase) => {
-    const cancellation = Promise.withResolvers<void>();
+    const cancellation = createDeferred<void>();
     const response = new Response(
       new ReadableStream<Uint8Array>({ cancel: () => cancellation.promise }),
       { status: testCase.status },

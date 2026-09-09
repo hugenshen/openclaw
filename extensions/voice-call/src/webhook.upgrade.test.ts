@@ -5,9 +5,10 @@ import type { Duplex } from "node:stream";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import type { RealtimeTranscriptionProviderPlugin } from "openclaw/plugin-sdk/realtime-transcription";
 import { describe, expect, it, vi } from "vitest";
-import { VoiceCallConfigSchema } from "./config.js";
+import { VoiceCallConfigSchema, validateProviderConfig } from "./config.js";
 import { CallManager } from "./manager.js";
 import { MockProvider } from "./providers/mock.js";
+import { TwilioProvider } from "./providers/twilio.js";
 import { VoiceCallWebhookServer } from "./webhook.js";
 import { RealtimeCallHandler } from "./webhook/realtime-handler.js";
 
@@ -26,27 +27,43 @@ vi.mock("./realtime-transcription.runtime.js", () => ({
 }));
 
 function createServer(streaming = false) {
+  const twilio = { accountSid: "fixture-account", authToken: "fixture-token" };
   const config = VoiceCallConfigSchema.parse({
+    enabled: true,
+    provider: streaming ? "twilio" : "mock",
+    fromNumber: streaming ? "+15555550100" : undefined,
+    twilio: streaming ? twilio : undefined,
+    inboundPolicy: "allowlist",
     serve: { bind: "127.0.0.1", path: "/voice/webhook" },
     staleCallReaperSeconds: 0,
     streaming: { enabled: streaming, streamPath: "/voice/stream" },
-    realtime: { enabled: true, streamPath: "/voice/stream/realtime" },
+    realtime: { enabled: !streaming, streamPath: "/voice/stream/realtime" },
   });
+  const validation = validateProviderConfig(config);
+  if (!validation.valid) {
+    throw new Error(validation.errors.join("; "));
+  }
   config.serve.port = 0;
   const manager = new CallManager(config);
-  const server = new VoiceCallWebhookServer(config, manager, new MockProvider());
+  const server = new VoiceCallWebhookServer(
+    config,
+    manager,
+    streaming ? new TwilioProvider(twilio) : new MockProvider(),
+  );
   const resolveRegistration = vi.fn((): never => {
     throw new Error("Rejected upgrades must not acquire a provider");
   });
-  server.setRealtimeHandler(
-    new RealtimeCallHandler(
-      config.realtime,
-      manager,
-      resolveRegistration,
-      config.serve.path,
-      server.getStreamDisconnectLifecycle(),
-    ),
-  );
+  if (!streaming) {
+    server.setRealtimeHandler(
+      new RealtimeCallHandler(
+        config.realtime,
+        manager,
+        resolveRegistration,
+        config.serve.path,
+        server.getStreamDisconnectLifecycle(),
+      ),
+    );
+  }
   return { server, resolveRegistration };
 }
 
@@ -70,7 +87,7 @@ describe("VoiceCallWebhookServer upgrade rejection", () => {
       let response = "";
       client.setEncoding("utf8");
       client.on("data", (chunk) => {
-        response += chunk;
+        response += chunk.toString();
       });
       await once(client, "connect");
       client.write(upgradeRequest("/not-a-voice-stream"));
@@ -146,37 +163,35 @@ describe("VoiceCallWebhookServer upgrade rejection", () => {
     }
   });
 
-  it("leaves recognized realtime and media upgrades with their handlers", async () => {
-    const { server, resolveRegistration } = createServer(true);
+  it.each([
+    { mode: "realtime", streaming: false, path: "/voice/stream/realtime/invalid", status: 401 },
+    { mode: "media", streaming: true, path: "/voice/stream", status: 101 },
+  ])("leaves a recognized $mode upgrade with its handler", async ({ streaming, path, status }) => {
+    const { server, resolveRegistration } = createServer(streaming);
     try {
       const url = new URL(await server.start());
-      for (const [path, status] of [
-        ["/voice/stream/realtime/invalid", 401],
-        ["/voice/stream", 101],
-      ] as const) {
-        const response = await new Promise<number | undefined>((resolve, reject) => {
-          const request = http.request(new URL(path, url), {
-            headers: {
-              Connection: "Upgrade",
-              Upgrade: "websocket",
-              "Sec-WebSocket-Version": "13",
-              "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ==",
-            },
-          });
-          request.on("response", (result) => {
-            result.resume();
-            resolve(result.statusCode);
-          });
-          request.on("upgrade", (result, socket) => {
-            socket.destroy();
-            resolve(result.statusCode);
-          });
-          request.on("error", reject);
-          request.setTimeout(2_000, () => request.destroy(new Error("Upgrade timed out")));
-          request.end();
+      const response = await new Promise<number | undefined>((resolve, reject) => {
+        const request = http.request(new URL(path, url), {
+          headers: {
+            Connection: "Upgrade",
+            Upgrade: "websocket",
+            "Sec-WebSocket-Version": "13",
+            "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ==",
+          },
         });
-        expect(response).toBe(status);
-      }
+        request.on("response", (result) => {
+          result.resume();
+          resolve(result.statusCode);
+        });
+        request.on("upgrade", (result, socket) => {
+          socket.destroy();
+          resolve(result.statusCode);
+        });
+        request.on("error", reject);
+        request.setTimeout(2_000, () => request.destroy(new Error("Upgrade timed out")));
+        request.end();
+      });
+      expect(response).toBe(status);
       expect(resolveRegistration).not.toHaveBeenCalled();
     } finally {
       await server.stop();

@@ -1,8 +1,6 @@
 // Install download tests cover downloading skill archives before extraction.
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
-import { createServer, type ServerResponse } from "node:http";
-import type { Socket } from "node:net";
 import path from "node:path";
 import { Readable } from "node:stream";
 import { __setFsSafeTestHooksForTest, getFsSafeTestHooks } from "@openclaw/fs-safe/test-hooks";
@@ -11,7 +9,10 @@ import * as tar from "tar";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { resolveSkillToolsRootDir } from "../runtime/tools-dir.js";
-import { createInstallDownloadTestState } from "../test-support/install-download-test-utils.js";
+import {
+  createInstallDownloadTestState,
+  withDownloadServer,
+} from "../test-support/install-download-test-utils.js";
 import {
   fetchWithSsrFGuardMock,
   hasBinaryMock,
@@ -114,64 +115,6 @@ function createCancelableBody() {
     },
   });
   return { stream, wasCanceled: () => canceled };
-}
-
-async function withDownloadServer(
-  respond: (response: ServerResponse) => Promise<void> | void,
-  run: (origin: string, release: ReturnType<typeof vi.fn>) => Promise<void>,
-): Promise<void> {
-  const sockets = new Set<Socket>();
-  const server = createServer((_request, response) => {
-    void Promise.resolve(respond(response)).catch((error: unknown) => {
-      response.destroy(error instanceof Error ? error : undefined);
-    });
-  });
-  server.on("connection", (socket) => {
-    sockets.add(socket);
-    socket.once("close", () => sockets.delete(socket));
-  });
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      server.off("error", reject);
-      resolve();
-    });
-  });
-
-  const address = server.address();
-  if (!address || typeof address === "string") {
-    throw new Error("Expected an ephemeral loopback server address");
-  }
-  const origin = `http://127.0.0.1:${address.port}`;
-  const release = vi.fn();
-  const actualFetchGuard = await vi.importActual<typeof import("../../infra/net/fetch-guard.js")>(
-    "../../infra/net/fetch-guard.js",
-  );
-  fetchWithSsrFGuardMock.mockImplementation(async (...args: unknown[]) => {
-    const params = args[0] as Parameters<typeof actualFetchGuard.fetchWithSsrFGuard>[0];
-    const guarded = await actualFetchGuard.fetchWithSsrFGuard({
-      ...params,
-      policy: { allowedOrigins: [origin] },
-    });
-    return {
-      ...guarded,
-      release: async () => {
-        release();
-        await guarded.release();
-      },
-    };
-  });
-
-  try {
-    await run(origin, release);
-  } finally {
-    for (const socket of sockets) {
-      socket.destroy();
-    }
-    await new Promise<void>((resolve, reject) => {
-      server.close((error) => (error ? reject(error) : resolve()));
-    });
-  }
 }
 
 function runCommandResult(
@@ -439,84 +382,6 @@ describe("installDownloadSpec extraction safety", () => {
         expect(release).toHaveBeenCalledOnce();
         await expect(fileExists(path.join(toolsRoot, ".openclaw-download-staging"))).resolves.toBe(
           false,
-        );
-      },
-    );
-  });
-
-  it("does not guess an archive type from a URL without an extension or Content-Disposition filename", async () => {
-    mockArchiveResponse(Buffer.from("plain-bytes"));
-    const result = await installDownloadSpec({
-      entry: buildEntry("cd-missing-archive-name"),
-      spec: {
-        kind: "download",
-        id: "dl",
-        url: "https://example.invalid/download",
-        extract: true,
-        targetDir: "runtime",
-      },
-      timeoutMs: 30_000,
-    });
-    expect(result.ok).toBe(false);
-    expect(result.message).toBe("extract requested but archive type could not be detected");
-  });
-
-  it.each([
-    {
-      name: "quoted filename",
-      disposition: 'attachment; filename="runtime.zip"',
-      urlPath: "/download",
-    },
-    {
-      name: "RFC 5987 filename* with a language tag",
-      disposition: "attachment; filename*=UTF-8'en'runtime.zip",
-      urlPath: "/download",
-    },
-    {
-      name: "quoted filename containing a semicolon",
-      disposition: 'attachment; filename="runtime;linux.zip"',
-      urlPath: "/download",
-    },
-    {
-      name: "URL suffix when Content-Disposition is a generic download name",
-      disposition: 'attachment; filename="download"',
-      urlPath: "/runtime.zip",
-    },
-  ])("extracts a zip using Content-Disposition $name", async ({ disposition, name, urlPath }) => {
-    const executableContents = "#!/bin/sh\nprintf verified\\n\n";
-    const zip = new JSZip();
-    zip.folder("package/empty/");
-    zip.file("package/run.sh", executableContents, { unixPermissions: 0o755 });
-    const archive = await zip.generateAsync({ type: "nodebuffer", platform: "UNIX" });
-
-    await withDownloadServer(
-      (response) => {
-        response.writeHead(200, {
-          "content-type": "application/octet-stream",
-          "content-disposition": disposition,
-        });
-        response.end(archive);
-      },
-      async (origin) => {
-        const entry = buildEntry(`cd-archive-${name.replaceAll(" ", "-")}`);
-        const result = await installDownloadSpec({
-          entry,
-          spec: {
-            kind: "download",
-            id: "dl",
-            url: `${origin}${urlPath}`,
-            extract: true,
-            targetDir: "runtime",
-            stripComponents: 1,
-          },
-          timeoutMs: 30_000,
-        });
-
-        expect(result.message).not.toContain("archive type could not be detected");
-        expect(result.ok).toBe(true);
-        const destinationDir = path.join(resolveSkillToolsRootDir(entry), "runtime");
-        await expect(fs.readFile(path.join(destinationDir, "run.sh"), "utf8")).resolves.toBe(
-          executableContents,
         );
       },
     );

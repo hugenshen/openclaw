@@ -890,7 +890,10 @@ class NodeRuntime private constructor(
   private val chatCommandOutbox = chatStores.commandOutbox
   private val clientDatabases = chatStores.clientDatabases
   private val externalTranscriptCache = chatStores.externalTranscriptCache
-  private val screenshotRequester by lazy { AndroidScreenshotFixture.createRequester() }
+
+  // Reentry retains this runtime, so requester data and both capability paths must share its original mode.
+  private val screenshotBranchesEnabled = mode == NodeRuntimeMode.ScreenshotFixture && AndroidScreenshotFixture.branchesEnabled
+  private val screenshotRequester by lazy { AndroidScreenshotFixture.createRequester(branchesEnabled = screenshotBranchesEnabled) }
   private val gatewayAuthLifecycleLock = Any()
   private var gatewayAuthResetInProgress = false
   private var gatewayConnectOperationsInFlight = 0
@@ -1059,6 +1062,7 @@ class NodeRuntime private constructor(
     val token: String?,
     val bootstrapToken: String?,
     val password: String?,
+    val bootstrapHandoff: ai.openclaw.app.gateway.GatewayBootstrapHandoff? = null,
   )
 
   /**
@@ -1122,11 +1126,15 @@ class NodeRuntime private constructor(
   // Identity owns an established connection until disconnect/replacement, independently
   // of the UI request or lifecycle sequence that originally admitted it.
   private class GatewayConnectionContext(
-    val auth: GatewayConnectAuth,
+    private val initialAuth: GatewayConnectAuth,
     // A started session owns retries and auth pauses before readiness is published.
     // Only bootstrap without operator auth may admit this role after the node connects.
     var operatorConnectAdmitted: Boolean = false,
-  )
+  ) {
+    val bootstrapHandoff = initialAuth.bootstrapHandoff
+    val auth: GatewayConnectAuth
+      get() = if (bootstrapHandoff?.completed == true) initialAuth.copy(bootstrapToken = null) else initialAuth
+  }
 
   private var activeGatewayConnection: GatewayConnectionContext? = null
 
@@ -2115,7 +2123,12 @@ class NodeRuntime private constructor(
           requestGateway = screenshotRequester,
           commandOutbox = chatCommandOutbox,
           cacheScope = { ChatCacheScope(AndroidScreenshotFixture.gatewayId, connectionGeneration = 0L) },
-          gatewayAdvertisesMethod = { method -> method != "sessions.branches.list" },
+          gatewayAdvertisesMethod = { method ->
+            when (method) {
+              "sessions.branches.list", "sessions.branches.switch" -> screenshotBranchesEnabled
+              else -> true
+            }
+          },
           gatewayAdvertisesCapability = { _ -> true },
         )
       }
@@ -3103,7 +3116,15 @@ class NodeRuntime private constructor(
     _serverName.value = "OpenClaw Gateway"
     _remoteAddress.value = "Mac Studio on local network"
     _gatewayVersion.value = BuildConfig.VERSION_NAME
-    replaceGatewayMethods(setOf(GatewayMethod.DesktopObserve.rawValue))
+    replaceGatewayMethods(
+      buildSet {
+        add(GatewayMethod.DesktopObserve.rawValue)
+        if (screenshotBranchesEnabled) {
+          add("sessions.branches.list")
+          add("sessions.branches.switch")
+        }
+      },
+    )
     replaceGatewayCapabilities(setOf(SESSION_UNREAD_ACK_CAPABILITY))
     _gatewayControlPage.value =
       GatewayControlPage(
@@ -4556,8 +4577,11 @@ class NodeRuntime private constructor(
 
   // Queued callers can exit before cleanup, so generation changes must request reconciliation.
   private fun advanceGatewayLifecycleIntent(): Long =
-    gatewayLifecycleIntentSeq.incrementAndGet().also {
-      requestBackgroundGatewayReconciliation()
+    synchronized(gatewayLifecycleIntentLock) {
+      activeGatewayConnection?.bootstrapHandoff?.invalidate()
+      gatewayLifecycleIntentSeq.incrementAndGet().also {
+        requestBackgroundGatewayReconciliation()
+      }
     }
 
   private fun gatewayLifecycleIntent(
@@ -4598,6 +4622,7 @@ class NodeRuntime private constructor(
   ): Boolean =
     runGatewayConnectOperation {
       beforeConnect()
+      activeGatewayConnection?.bootstrapHandoff?.invalidate()
       val connection = GatewayConnectionContext(auth)
       activeGatewayConnection = connection
       val tls = connectionManager.resolveTlsParams(endpoint)
@@ -4643,6 +4668,7 @@ class NodeRuntime private constructor(
         auth.password,
         nodeConnectOptions,
         tls,
+        bootstrapHandoff = connection.bootstrapHandoff,
       )
     }
 
@@ -4820,15 +4846,21 @@ class NodeRuntime private constructor(
   internal fun resolveGatewayConnectAuth(
     endpoint: GatewayEndpoint,
     explicitAuth: GatewayConnectAuth? = null,
-  ): GatewayConnectAuth =
-    explicitAuth
-      ?: prefs.loadGatewayCredentials(endpoint.stableId).let { credentials ->
-        GatewayConnectAuth(
-          token = credentials.token,
-          bootstrapToken = credentials.bootstrapToken,
-          password = credentials.password,
-        )
-      }
+  ): GatewayConnectAuth {
+    val auth =
+      explicitAuth
+        ?: prefs.loadGatewayCredentials(endpoint.stableId).let { credentials ->
+          GatewayConnectAuth(
+            token = credentials.token,
+            bootstrapToken = credentials.bootstrapToken,
+            password = credentials.password,
+          )
+        }
+    val bootstrap = auth.bootstrapToken?.trim()?.takeIf { it.isNotEmpty() } ?: return auth
+    return auth.copy(
+      bootstrapHandoff = prefs.prepareGatewayBootstrapHandoff(endpoint.stableId, bootstrap, allowStoredTokenRecovery = explicitAuth == null),
+    )
+  }
 
   fun acceptGatewayTrustPrompt(manualFingerprint: String? = null) {
     val prompt = _pendingGatewayTrust.value ?: return
@@ -5139,6 +5171,7 @@ class NodeRuntime private constructor(
     connectedEndpoint = null
     connectingEndpointStableId = null
     _gatewayControlPage.value = null
+    activeGatewayConnection?.bootstrapHandoff?.invalidate()
     activeGatewayConnection = null
     updateStatus {
       operatorConnected = false
@@ -5277,6 +5310,8 @@ class NodeRuntime private constructor(
   suspend fun forkChatAtEntry(entryId: String): SessionForkResult? = chat.forkSessionAtEntry(chatSessionKey.value, entryId)
 
   suspend fun refreshChatSessionBranches(): Boolean = chat.refreshSessionBranches()
+
+  internal fun canSwitchChatSessionBranch(sessionKey: String): Boolean = chat.canSwitchSessionBranch(sessionKey)
 
   suspend fun switchChatSessionBranch(leafEntryId: String): Boolean = chat.switchSessionBranch(chatSessionKey.value, leafEntryId)
 
@@ -5928,26 +5963,20 @@ class NodeRuntime private constructor(
           loadedPageDepthsByHost = previousPageDepths,
           isCurrent = { sessionCatalogRefreshSeq.get() == requestSeq },
         ) { catalogId, hostId, cursor ->
-          try {
-            val pageResponse =
-              requestGatewayData(
-                gatewayScope,
-                "sessions.catalog.list",
-                sessionCatalogPageParams(
-                  normalizedAgentId,
-                  catalogId,
-                  mapOf(hostId to cursor),
-                ),
-              )
-            parseSessionCatalogs(pageResponse, normalizedAgentId, json)
-              .firstOrNull { it.id == catalogId }
-              ?.hosts
-              ?.firstOrNull { it.hostId == hostId }
-          } catch (err: CancellationException) {
-            throw err
-          } catch (_: Throwable) {
-            null
-          }
+          val pageResponse =
+            requestGatewayData(
+              gatewayScope,
+              "sessions.catalog.list",
+              sessionCatalogPageParams(
+                normalizedAgentId,
+                catalogId,
+                mapOf(hostId to cursor),
+              ),
+            )
+          parseSessionCatalogs(pageResponse, normalizedAgentId, json)
+            .firstOrNull { it.id == catalogId }
+            ?.hosts
+            ?.firstOrNull { it.hostId == hostId }
         }
       publishGatewayData(gatewayScope) {
         if (sessionCatalogRefreshSeq.get() == requestSeq) {

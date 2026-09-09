@@ -1808,6 +1808,50 @@ describeBrowserLayout.concurrent("chat responsive browser layout", () => {
     }
   });
 
+  it("aligns mobile cards with the composer after Chat styles load", async () => {
+    const page = await openBrowserPage(390, 844);
+    try {
+      // New Session can load composer styles before Chat's lazy layout stylesheet.
+      await page.setContent(`<style>${readUiCss()}${readStyleSheet("ui/src/styles/chat/layout.css")}</style>
+        <section class="card chat"><div class="chat-main__conversation">
+          <div class="chat-inline-approval">Approval</div>
+          <div class="chat-prs">Pull request</div>
+          <div class="session-suggestions">Suggestion</div>
+          <div class="chat-swarm">Parallel task</div>
+          <div class="agent-chat__composer-shell"><div class="agent-chat__input">Composer</div></div>
+        </div></section>`);
+      await page.locator(".card.chat").evaluate(finishElementAnimations);
+      const composer = await getRect(page, ".agent-chat__composer-shell");
+      for (const selector of [
+        ".chat-prs",
+        ".chat-swarm",
+        ".session-suggestions",
+        ".chat-inline-approval",
+      ]) {
+        const card = await getRect(page, selector);
+        expect(card.left, selector).toBeCloseTo(composer.left, 0);
+        expect(card.right, selector).toBeCloseTo(composer.right, 0);
+      }
+    } finally {
+      await closeBrowserPage(page);
+    }
+  });
+
+  it("paints a visible outline when a chat image action receives keyboard focus", async () => {
+    const page = await openBrowserPage(390, 844);
+    try {
+      await page.setContent(`<style>${readUiCss()}</style>
+        <button class="chat-tool-card__preview-image-button">Open image</button>`);
+      await page.keyboard.press("Tab");
+      const button = page.locator("button");
+      await expectBrowser(button).toBeFocused();
+      await expectBrowser(button).toHaveCSS("outline-style", "solid");
+      await expectBrowser(button).toHaveCSS("outline-width", "2px");
+    } finally {
+      await closeBrowserPage(page);
+    }
+  });
+
   it("applies configured chat width to tool rows and composer without changing defaults", async () => {
     const page = await openBrowserPage(1600, 900);
     const renderFixture = async (configured: boolean) => {
@@ -4651,55 +4695,71 @@ describeBrowserLayout.concurrent("chat responsive browser layout", () => {
   });
 
   it.for(["dark", "light"])(
-    "keeps unconfirmed footers and Retry amber while failed sends stay red in %s mode",
+    "keeps send recovery visible before hover with unconfirmed amber and failed red in %s mode",
     async (theme, context) => {
       const page = await openBrowserPage(390, 844);
       try {
         await page.setContent(`<!doctype html><html data-theme-mode="${theme}"><head><style>${readUiCss()}</style></head><body>
         <span id="warning-color-probe" style="color: var(--warn)">Warning</span>
         <span id="danger-color-probe" style="color: var(--danger)">Failure</span>
+        <div class="chat-thread">
         ${[
           { state: "unconfirmed", label: "Delivery unconfirmed" },
           { state: "failed", label: "Not sent" },
         ]
-          .map(
-            ({ state, label }) => `<div class="chat-group user chat-group--with-footer">
+          .flatMap(({ state, label }) =>
+            ["own", "peer", "direct"].map(
+              (
+                sender,
+              ) => `<div class="chat-group user chat-group--with-footer${sender === "peer" ? " chat-group--peer" : ""}">
           <div class="chat-group-messages"><div class="chat-bubble">Attempted message</div></div>
-          <div class="chat-group-footer chat-group-footer--send-failure">
+          <div class="chat-group-footer chat-group-footer--send-failure${sender === "direct" ? "" : " chat-group-footer--persistent-identity"}">
             <div class="chat-group-footer__meta"><span class="chat-sender-name">You</span>
               <span class="chat-send-status" data-send-state="${state}">
                 <span>·</span><span>${label}</span><span>·</span>
                 <button class="chat-send-status__action chat-send-status__retry" type="button">Retry</button>
+                ${state === "unconfirmed" ? '<button class="chat-send-status__action chat-send-status__discard" type="button">Discard</button>' : ""}
               </span>
             </div>
           </div>
         </div>`,
+            ),
           )
           .join("")}
+        </div>
       </body></html>`);
 
         for (const [state, probe] of [
           ["unconfirmed", "warning"],
           ["failed", "danger"],
         ]) {
-          const status = page.locator(`.chat-send-status[data-send-state="${state}"]`);
+          const statuses = page.locator(`.chat-send-status[data-send-state="${state}"]`);
           const expectedColor = await page
             .locator(`#${probe}-color-probe`)
             .evaluate((element) => getComputedStyle(element).color);
-          expect(await status.evaluate((element) => getComputedStyle(element).color)).toBe(
-            expectedColor,
-          );
-          const retry = status.locator("button");
-          expect(await retry.evaluate((element) => getComputedStyle(element).borderStyle)).toBe(
-            "none",
-          );
-          expect(await retry.evaluate((element) => getComputedStyle(element).color)).toBe(
-            expectedColor,
-          );
-          await retry.hover();
-          await context.expect
-            .poll(() => retry.evaluate((element) => getComputedStyle(element).color))
-            .toBe(expectedColor);
+          for (const status of await statuses.all()) {
+            await page.mouse.move(0, 0);
+            // A child can report opacity 1 while its collapsed identity footer hides it.
+            const footer = status.locator("..").locator("..");
+            await expectBrowser(footer).toHaveCSS("opacity", "1");
+            expect(await status.evaluate((element) => getComputedStyle(element).color)).toBe(
+              expectedColor,
+            );
+            for (const action of await status.locator("button").all()) {
+              await expectBrowser(action).toHaveCSS("opacity", "1");
+              await expectBrowser(action).toHaveCSS("pointer-events", "auto");
+              expect(
+                await action.evaluate((element) => getComputedStyle(element).borderStyle),
+              ).toBe("none");
+              expect(await action.evaluate((element) => getComputedStyle(element).color)).toBe(
+                expectedColor,
+              );
+              await action.hover();
+              await context.expect
+                .poll(() => action.evaluate((element) => getComputedStyle(element).color))
+                .toBe(expectedColor);
+            }
+          }
         }
       } finally {
         await closeBrowserPage(page);

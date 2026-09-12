@@ -46,7 +46,7 @@ Related guide: [TUI](/web/tui)
 | `--deliver`                  | `false`                                   | Deliver assistant replies through configured channels.                             |
 | `--thinking <level>`         | (model default)                           | Thinking level override.                                                           |
 | `--message <text>`           | (none)                                    | Send an initial message after connecting.                                          |
-| `--timeout-ms <ms>`          | `agents.defaults.timeoutSeconds`          | Agent timeout. Invalid values log a warning and are ignored.                       |
+| `--timeout-ms <ms>`          | `agents.defaults.timeoutSeconds`          | Agent timeout. Omit for the default; explicitly empty or invalid values are rejected. |
 | `--history-limit <n>`        | `200`                                     | History entries to load on attach.                                                 |
 
 Aliases: `openclaw chat` and `openclaw terminal` invoke this command with
@@ -54,6 +54,7 @@ Aliases: `openclaw chat` and `openclaw terminal` invoke this command with
 
 ## Notes
 
+- `--timeout-ms` requires a positive integer. Omit it to use `agents.defaults.timeoutSeconds`; explicitly empty values are rejected.
 - `--local` cannot combine with `--url`, `--token`, `--password`, or `--tls-fingerprint`.
 - Pass only one Gateway target. A URL target cannot combine with `--url`, and
   any positional target cannot combine with `--session` or local mode.

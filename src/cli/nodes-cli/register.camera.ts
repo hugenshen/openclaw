@@ -138,7 +138,7 @@ export function registerNodesCameraCommands(nodes: Command) {
             if (facingOpt === "both" || facingOpt === "front" || facingOpt === "back") {
               facing = facingOpt;
             } else {
-              throw new Error(`invalid facing: ${String(opts.facing)} (expected front|back|both)`);
+              throw new Error(`invalid facing: ${opts.facing} (expected front|back|both)`);
             }
           }
 

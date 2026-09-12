@@ -264,7 +264,7 @@ function renderStabilitySummary(snapshot: DiagnosticStabilitySnapshot, rich: boo
   return lines;
 }
 
-function normalizeStabilityBundleTarget(raw: unknown): string | null {
+export function normalizeStabilityBundleTarget(raw: unknown): string | null {
   if (raw === undefined || raw === false) {
     return null;
   }
@@ -275,7 +275,10 @@ function normalizeStabilityBundleTarget(raw: unknown): string | null {
     return "latest";
   }
   const value = raw.trim();
-  return value === "" ? "latest" : value;
+  if (value === "") {
+    throw new Error('--bundle must be a non-empty path or "latest".');
+  }
+  return value;
 }
 
 function formatBundleError(result: ReadDiagnosticStabilityBundleResult): string {

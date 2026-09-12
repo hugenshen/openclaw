@@ -35,19 +35,19 @@ Related guide: [TUI](/web/tui)
 
 ## Options
 
-| Flag                         | Default                                   | Description                                                                        |
-| ---------------------------- | ----------------------------------------- | ---------------------------------------------------------------------------------- |
-| `--local`                    | `false`                                   | Run against the local embedded agent runtime instead of a Gateway.                 |
-| `--url <url>`                | `gateway.remote.url` from config          | Gateway WebSocket URL.                                                             |
-| `--token <token>`            | (none)                                    | Gateway token if required.                                                         |
-| `--password <pass>`          | (none)                                    | Gateway password if required.                                                      |
-| `--tls-fingerprint <sha256>` | `gateway.remote.tlsFingerprint`           | Expected TLS certificate fingerprint for a pinned `wss://` Gateway.                |
-| `--session <key>`            | `main` (or `global` when scope is global) | Session key. Inside an agent workspace it auto-selects that agent unless prefixed. |
-| `--deliver`                  | `false`                                   | Deliver assistant replies through configured channels.                             |
-| `--thinking <level>`         | (model default)                           | Thinking level override.                                                           |
-| `--message <text>`           | (none)                                    | Send an initial message after connecting.                                          |
+| Flag                         | Default                                   | Description                                                                           |
+| ---------------------------- | ----------------------------------------- | ------------------------------------------------------------------------------------- |
+| `--local`                    | `false`                                   | Run against the local embedded agent runtime instead of a Gateway.                    |
+| `--url <url>`                | `gateway.remote.url` from config          | Gateway WebSocket URL.                                                                |
+| `--token <token>`            | (none)                                    | Gateway token if required.                                                            |
+| `--password <pass>`          | (none)                                    | Gateway password if required.                                                         |
+| `--tls-fingerprint <sha256>` | `gateway.remote.tlsFingerprint`           | Expected TLS certificate fingerprint for a pinned `wss://` Gateway.                   |
+| `--session <key>`            | `main` (or `global` when scope is global) | Session key. Inside an agent workspace it auto-selects that agent unless prefixed.    |
+| `--deliver`                  | `false`                                   | Deliver assistant replies through configured channels.                                |
+| `--thinking <level>`         | (model default)                           | Thinking level override.                                                              |
+| `--message <text>`           | (none)                                    | Send an initial message after connecting.                                             |
 | `--timeout-ms <ms>`          | `agents.defaults.timeoutSeconds`          | Agent timeout. Omit for the default; explicitly empty or invalid values are rejected. |
-| `--history-limit <n>`        | `200`                                     | History entries to load on attach.                                                 |
+| `--history-limit <n>`        | `200`                                     | History entries to load on attach.                                                    |
 
 Aliases: `openclaw chat` and `openclaw terminal` invoke this command with
 `--local` implied.

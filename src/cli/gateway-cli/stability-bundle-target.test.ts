@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { normalizeStabilityBundleTarget } from "./register.js";
+import { normalizeStabilityBundleTarget } from "./stability-bundle-target.js";
 
 describe("normalizeStabilityBundleTarget", () => {
   it("treats omitted and false values as disabled", () => {

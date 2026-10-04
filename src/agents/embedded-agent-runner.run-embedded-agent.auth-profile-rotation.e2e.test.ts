@@ -12,6 +12,10 @@ import {
   resolveInlineProviderApiKeyUsageId,
   type AuthProfileFailureReason,
 } from "./auth-profiles.js";
+import {
+  createApiKeyCredential,
+  createAuthProfileStoreFixture,
+} from "./auth-profiles/credential-fixtures.test-support.js";
 import { ensureAuthProfileStore, saveAuthProfileStore } from "./auth-profiles/store-runtime.js";
 import type { EmbeddedRunAttemptResult } from "./embedded-agent-runner/run/types.js";
 import type { AgentHarness } from "./harness/types.js";
@@ -59,6 +63,7 @@ const installRunEmbeddedMocks = () => {
     resolveModelAsync: async (provider: string, modelId: string) => {
       const subscriptionModel = modelId === "chatgpt-mock";
       return {
+        logicalRef: { provider, model: modelId },
         model: {
           id: modelId,
           name: modelId,
@@ -169,7 +174,7 @@ const makeConfig = (opts?: { fallbacks?: string[]; apiKey?: string }): OpenClawC
           fallbacks: opts?.fallbacks ?? [],
         },
       },
-      list: [{ id: "test" }],
+      entries: { test: {} },
     },
     models: {
       providers: {
@@ -201,14 +206,13 @@ const makeAgentOverrideOnlyFallbackConfig = (agentId: string): OpenClawConfig =>
           fallbacks: [],
         },
       },
-      list: [
-        {
-          id: agentId,
+      entries: {
+        [agentId]: {
           model: {
             fallbacks: ["openai/mock-2"],
           },
         },
-      ],
+      },
     },
     models: {
       providers: {
@@ -237,7 +241,7 @@ const copilotModelId = "gpt-4o";
 const makeCopilotConfig = (): OpenClawConfig =>
   ({
     agents: {
-      list: [{ id: "test" }],
+      entries: { test: {} },
     },
     models: {
       providers: {
@@ -303,12 +307,9 @@ const writeAuthStore = async (
 
 const writeCopilotAuthStore = async (agentDir: string, token = "gh-token") => {
   saveAuthProfileStore(
-    {
-      version: 1,
-      profiles: {
-        "github-copilot:github": { type: "token", provider: "github-copilot", token },
-      },
-    },
+    createAuthProfileStoreFixture({
+      "github-copilot:github": { type: "token", provider: "github-copilot", token },
+    }),
     agentDir,
   );
 };
@@ -318,11 +319,7 @@ const writeOpenAiCodexAuthStore = async (agentDir: string, includeBackup = false
     {
       version: 1,
       profiles: {
-        "openai:work": {
-          type: "api_key",
-          provider: "openai",
-          key: "sk-codex",
-        },
+        "openai:work": createApiKeyCredential("openai", "sk-codex"),
         ...(includeBackup
           ? {
               "openai:backup": {
@@ -921,9 +918,8 @@ describe("runEmbeddedAgent auth profile rotation", () => {
     }
   });
 
-  it("rotates auto-pinned profiles on long-window rate limits after transient retries", async () => {
+  it("rotates auto-pinned profiles immediately on long-window rate limits", async () => {
     await runAutoPinnedRotationCase({
-      exhaustTransientRetries: true,
       errorMessage: "429 Too Many Requests: subscription usage limit reached",
       sessionKey: "agent:test:auto",
       runId: "run:auto",

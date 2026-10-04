@@ -12,7 +12,6 @@ import type {
 } from "openclaw/plugin-sdk/llm";
 import { resolveClaudeModelIdentity } from "openclaw/plugin-sdk/provider-model-shared";
 
-/** Share explicit-cache capabilities between registration and payload construction. */
 export function resolveBedrockPromptCachePolicy(
   model: Pick<Model, "id" | "params"> & { name?: string },
 ): "nova" | "claude" | undefined {
@@ -86,25 +85,9 @@ export function supportsBedrockClaudePromptCaching(modelId: string, modelName?: 
     }
     return false;
   }
-  if (candidates.some((s) => s.includes("-4-"))) {
-    return true;
-  }
-  if (
-    candidates.some(
-      (candidate) =>
-        candidate.includes("claude-fable-5") ||
-        candidate.includes("claude-mythos-5") ||
-        candidate.includes("claude-opus-5") ||
-        candidate.includes("claude-sonnet-5"),
-    )
-  ) {
-    return true;
-  }
-  if (candidates.some((s) => s.includes("claude-3-7-sonnet"))) {
-    return true;
-  }
-  if (candidates.some((s) => s.includes("claude-3-5-haiku"))) {
-    return true;
-  }
-  return false;
+  return candidates.some(
+    (candidate) =>
+      candidate.includes("-4-") ||
+      /claude-(?:fable-5|mythos-5|opus-5|sonnet-5|3-7-sonnet|3-5-haiku)/.test(candidate),
+  );
 }

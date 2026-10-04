@@ -1,4 +1,9 @@
+import type { MessagingToolSend } from "../../agents/embedded-agent-messaging.types.js";
+import type { EmbeddedAgentRunResult } from "../../agents/embedded-agent-runner/types.js";
+import type { ReplyCompletion } from "../../agents/reply-completion.js";
+import type { ReplyPayload } from "../../shared/reply-payload.types.js";
 import { resolveAgentTurnExecutionStatus } from "./agent-runner-execution-status.js";
+import type { ReplyDispatchDeliveryOutcome } from "./reply-dispatch-outcome.js";
 import { isReplyOperationSuperseded } from "./reply-operation-abort.js";
 import type { ReplyOperation } from "./reply-run-registry.js";
 
@@ -13,7 +18,8 @@ type ReplyOperationAdmissionSnapshot =
         | "lifecycle-invalidated"
         | "queue-cap"
         | "question-response-indeterminate"
-        | "question-response-refused";
+        | "question-response-refused"
+        | "question-response-rejected";
     };
 
 // Rejection diagnostics carry owner-selected codes, never user-facing error text.
@@ -27,11 +33,30 @@ export type ReplyPreRunRejectionCode =
   | "session-directive-rejected";
 
 export type ReplyOperationRunState = {
+  replyCompletion?: ReplyCompletion;
+  heartbeat?: {
+    prepareReply: (
+      replyResult: ReplyPayload | ReplyPayload[] | undefined,
+      runState: ReplyOperationRunState,
+    ) => Promise<{
+      reply?: ReplyPayload;
+      settle?: (outcome: ReplyDispatchDeliveryOutcome) => Promise<void>;
+    }>;
+  };
   admission?: ReplyOperationAdmissionSnapshot;
+  /** The Gateway accepted this question answer or rejected its values before commitment. */
+  questionInputHandled?: true;
   messageInjectionAborted?: true;
   agentTurn?: ReturnType<typeof resolveAgentTurnExecutionStatus>;
   agentTurnOwner?: ReplyOperation;
+  messagingToolSentTargets?: MessagingToolSend[];
+  backgroundWorkStarted?: boolean;
   preRunRejection?: ReplyPreRunRejectionCode;
+  /**
+   * Armed by the admitted interactive run owner. Dispatch consumes it once when a stale
+   * watchdog drops the turn before output; true means the session lane will answer instead.
+   */
+  continueStalledTurn?: () => boolean;
 };
 
 // Carries this invocation's admission decision through reply option spreads so
@@ -51,12 +76,30 @@ export function resolveReplyOperationRunState(
 export function recordReplyOperationAgentTurn(
   states: readonly ReplyOperationRunState[] | undefined,
   owner: ReplyOperation | undefined,
-  outcome?: Parameters<typeof resolveAgentTurnExecutionStatus>[0],
+  outcome?:
+    | { kind: "aborted" | "rejected" }
+    | {
+        kind: "settled";
+        status: "ok" | "failed";
+        result: Pick<
+          EmbeddedAgentRunResult,
+          "messagingToolSentTargets" | "asyncWorkStarted" | "acceptedSessionSpawns"
+        >;
+      },
 ): void {
   for (const state of states ?? []) {
     state.agentTurn = resolveAgentTurnExecutionStatus(
       outcome ?? (owner?.result?.kind === "aborted" ? owner.result : undefined),
     );
+    if (outcome?.kind === "settled") {
+      state.messagingToolSentTargets = outcome.result.messagingToolSentTargets?.slice();
+      state.backgroundWorkStarted = Boolean(
+        outcome.result.asyncWorkStarted || outcome.result.acceptedSessionSpawns?.length,
+      );
+    } else if (!owner || state.agentTurnOwner !== owner) {
+      state.messagingToolSentTargets = undefined;
+      state.backgroundWorkStarted = false;
+    }
     state.agentTurnOwner = owner;
   }
 }

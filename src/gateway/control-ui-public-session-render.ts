@@ -3,12 +3,10 @@ import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import MarkdownIt from "markdown-it";
 import { isHeartbeatOkResponse, isHeartbeatUserMessage } from "../auto-reply/heartbeat-filter.js";
 import { HEARTBEAT_PROMPT } from "../auto-reply/heartbeat.js";
-import {
-  stripInternalMetadataForDisplay,
-  stripUserEnvelopeForDisplay,
-} from "../auto-reply/reply/display-text-sanitize.js";
+import { stripInternalMetadataForDisplay } from "../auto-reply/reply/display-text-sanitize.js";
+import { stripUserEnvelopeForDisplay } from "../auto-reply/reply/user-envelope-display.js";
 import { redactToolPayloadText } from "../logging/redact.js";
-import { splitMediaFromOutput } from "../media/parse.js";
+import { splitMediaOutput } from "../media/parse-output.js";
 import { INTER_SESSION_PROMPT_PREFIX_BASE } from "../sessions/input-provenance.js";
 import { extractAssistantPhaseText } from "../shared/chat-message-content.js";
 import { escapeHtml } from "../shared/html-escape.js";
@@ -21,14 +19,13 @@ const MAX_DOCUMENT_CHARS = 262_144;
 
 const markdown = new MarkdownIt({ html: false, linkify: false, breaks: true });
 markdown.validateLink = (value) => {
-  try {
-    const url = new URL(value);
-    return (
-      (url.protocol === "https:" || url.protocol === "http:") && !url.username && !url.password
-    );
-  } catch {
-    return false;
-  }
+  const url = URL.parse(value);
+  return Boolean(
+    url &&
+    (url.protocol === "https:" || url.protocol === "http:") &&
+    !url.username &&
+    !url.password,
+  );
 };
 // Images must not contact third parties or load authenticated session media.
 markdown.renderer.rules.image = () => '<span class="omitted">[Image omitted]</span>';
@@ -98,9 +95,8 @@ function publicMessageText(
     text = stripSuppressedControlReplyToken(text);
   }
   // The canonical parser removes attachment directives while preserving fenced examples.
-  text = splitMediaFromOutput(text, {
+  text = splitMediaOutput(text, {
     extractAudioDirectives: false,
-    extractMarkdownImages: false,
   }).text;
   text = redactToolPayloadText(text).trim();
   return text ? { role: entry.role, text } : undefined;

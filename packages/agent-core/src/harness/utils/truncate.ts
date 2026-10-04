@@ -1,4 +1,3 @@
-// Agent Core module implements truncate behavior.
 export const DEFAULT_MAX_LINES = 2000;
 export const DEFAULT_MAX_BYTES = 50 * 1024; // 50KB
 export const GREP_MAX_LINE_LENGTH = 500; // Max chars per grep match line
@@ -129,24 +128,25 @@ function buildTruncationResult(
   input: ResolvedTruncationInput,
   params: {
     content: string;
-    truncated: boolean;
-    truncatedBy: TruncationResult["truncatedBy"];
-    outputLines: number;
-    outputBytes: number;
+    truncatedBy?: TruncationResult["truncatedBy"];
+    outputLines?: number;
+    outputBytes?: number;
     lastLinePartial?: boolean;
     firstLineExceedsLimit?: boolean;
   },
 ): TruncationResult {
+  const truncatedBy = params.truncatedBy ?? null;
+  const outputLines = params.outputLines ?? input.totalLines;
+  const truncated = truncatedBy !== null;
   return {
     // One-element joins can retain a source slice; multiline joins build their own text.
-    content:
-      params.truncated && params.outputLines === 1 ? copyString(params.content) : params.content,
-    truncated: params.truncated,
-    truncatedBy: params.truncatedBy,
+    content: truncated && outputLines === 1 ? copyString(params.content) : params.content,
+    truncated,
+    truncatedBy,
     totalLines: input.totalLines,
     totalBytes: input.totalBytes,
-    outputLines: params.outputLines,
-    outputBytes: params.outputBytes,
+    outputLines,
+    outputBytes: params.outputBytes ?? input.totalBytes,
     lastLinePartial: params.lastLinePartial ?? false,
     firstLineExceedsLimit: params.firstLineExceedsLimit ?? false,
     maxLines: input.maxLines,
@@ -164,13 +164,7 @@ export function truncateHead(content: string, options: TruncationOptions = {}): 
   const input = resolveTruncationInput(content, options);
 
   if (input.totalLines <= input.maxLines && input.totalBytes <= input.maxBytes) {
-    return buildTruncationResult(input, {
-      content,
-      truncated: false,
-      truncatedBy: null,
-      outputLines: input.totalLines,
-      outputBytes: input.totalBytes,
-    });
+    return buildTruncationResult(input, { content });
   }
 
   const firstLineEnd = content.indexOf("\n");
@@ -178,7 +172,6 @@ export function truncateHead(content: string, options: TruncationOptions = {}): 
   if (input.totalLines > 0 && utf8ByteLength(firstLine) > input.maxBytes) {
     return buildTruncationResult(input, {
       content: "",
-      truncated: true,
       truncatedBy: "bytes",
       outputLines: 0,
       outputBytes: 0,
@@ -221,7 +214,6 @@ export function truncateHead(content: string, options: TruncationOptions = {}): 
 
   return buildTruncationResult(input, {
     content: outputLines.join("\n"),
-    truncated: true,
     truncatedBy,
     outputLines: outputLines.length,
     outputBytes: outputBytesCount,
@@ -238,13 +230,7 @@ export function truncateTail(content: string, options: TruncationOptions = {}): 
   const input = resolveTruncationInput(content, options);
 
   if (input.totalLines <= input.maxLines && input.totalBytes <= input.maxBytes) {
-    return buildTruncationResult(input, {
-      content,
-      truncated: false,
-      truncatedBy: null,
-      outputLines: input.totalLines,
-      outputBytes: input.totalBytes,
-    });
+    return buildTruncationResult(input, { content });
   }
 
   const outputLines: string[] = [];
@@ -286,7 +272,6 @@ export function truncateTail(content: string, options: TruncationOptions = {}): 
   return buildTruncationResult(input, {
     // Join only selected lines so a multiline result does not retain the full source.
     content: outputLines.toReversed().join("\n"),
-    truncated: true,
     truncatedBy,
     outputLines: outputLines.length,
     outputBytes: outputBytesCount,

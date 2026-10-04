@@ -2,6 +2,15 @@
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { ContextEngineHostCapability } from "../context-engine/types.js";
 
+type CliBackendNoOutputWatchdog = {
+  /** Fraction of overall timeout used when fixed timeout is not set. */
+  noOutputTimeoutRatio?: number;
+  /** Lower bound for computed watchdog timeout. */
+  minMs?: number;
+  /** Upper bound for computed watchdog timeout. */
+  maxMs?: number;
+};
+
 /** Static command adapter owned by a CLI backend plugin registration. */
 export type CliBackendConfig = {
   /** CLI command to execute (absolute path or on PATH). */
@@ -74,23 +83,9 @@ export type CliBackendConfig = {
     /** No-output watchdog tuning (fresh vs resumed runs). */
     watchdog?: {
       /** Fresh/new sessions (non-resume). */
-      fresh?: {
-        /** Fraction of overall timeout used when fixed timeout is not set. */
-        noOutputTimeoutRatio?: number;
-        /** Lower bound for computed watchdog timeout. */
-        minMs?: number;
-        /** Upper bound for computed watchdog timeout. */
-        maxMs?: number;
-      };
+      fresh?: CliBackendNoOutputWatchdog;
       /** Resume sessions. */
-      resume?: {
-        /** Fraction of overall timeout used when fixed timeout is not set. */
-        noOutputTimeoutRatio?: number;
-        /** Lower bound for computed watchdog timeout. */
-        minMs?: number;
-        /** Upper bound for computed watchdog timeout. */
-        maxMs?: number;
-      };
+      resume?: CliBackendNoOutputWatchdog;
     };
   };
 };
@@ -168,6 +163,8 @@ export type CliBackendToolAvailability = {
 
 /** Native action a plugin-owned runtime asks the admitted host run to authorize. */
 export type CliBackendToolPermissionRequest = {
+  /** Actual working directory reported by the native permission hook. */
+  cwd?: string;
   toolName: string;
   toolInput: Record<string, unknown>;
   toolCallId?: string;
@@ -282,8 +279,12 @@ export type CliBackendResolveExecutionArgsContext = {
   modelId: string;
   authProfileId?: string;
   thinkingLevel?: CliBackendThinkingLevel;
+  /** Effective fast mode at spawn, after queue admission and backend preparation. */
+  fastMode?: boolean;
   executionMode?: CliBackendExecutionMode;
   toolAvailability?: CliBackendToolAvailability;
+  /** Canonical tools routed through OpenClaw; disable equivalent native tools. */
+  hostOwnedTools?: readonly string[];
   useResume: boolean;
   baseArgs: readonly string[];
 };
@@ -562,6 +563,11 @@ type CliBackendPluginBase = {
    * `toolAvailabilityEnforcement`; `always-on` backends fail closed.
    */
   nativeToolMode?: CliBackendNativeToolMode;
+  /** Default local coding tools owned by OpenClaw instead of the native CLI.
+   * Applies only with bundled loopback MCP, outside exact or node runs.
+   * The execution-args adapter must disable the equivalent native tools.
+   */
+  hostOwnedTools?: readonly string[];
   /**
    * Side-question native tool behavior.
    *

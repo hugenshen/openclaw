@@ -70,15 +70,16 @@ Amazon Bedrock, Google, Microsoft Foundry, OAuth, proxies, Vertex, and other
 cache-TTL-eligible routes keep client-side pruning. New pruning rounds are gated
 on both a time check and a context-size check:
 
-1. Wait for the cache TTL to expire (default 5 minutes when set manually; see [Smart defaults](#smart-defaults) for the Anthropic auto-default). Each successful model request refreshes the in-memory clock to its request start time, including tool-loop requests before turn settlement. Failed requests do not refresh it. Before the TTL elapses, no new pruning occurs; existing projections still replay unchanged.
+1. Wait for the cache TTL to expire. When you turn on `cache-ttl` mode and set no `ttl`, the TTL is 5 minutes. The bundled Anthropic plugin seeds `1h` instead, see [Smart defaults](#smart-defaults). Each successful model request refreshes the in-memory clock to its request start time, including tool-loop requests before turn settlement. Failed requests do not refresh it. Before the TTL elapses, no new pruning occurs. Existing projections still replay unchanged.
 2. Once the TTL has elapsed, estimate total context size against the model's context window. Below roughly 30% usage, pruning is skipped and the TTL clock keeps running.
 3. **Soft-trim** oversized tool results: results over 4,000 characters keep their first and last 1,500 characters with `...` in between.
-4. If context usage is still at or above roughly 50% and at least 50,000 characters of prunable tool content remain, **hard-clear** those results: replace their content with a placeholder (default `[Old tool result content cleared]`, configurable via `agents.defaults.contextPruning.hardClear.placeholder`; set `hardClear.enabled: false` to skip this step).
+4. If context usage is still at or above roughly 50% and at least 50,000 characters of prunable tool content remain, **hard-clear** those results. A hard clear replaces the content of each result with a placeholder. The default placeholder is `[Old tool result content cleared]`, and `agents.defaults.contextPruning.hardClear.placeholder` changes it. Set `hardClear.enabled: false` to skip this step.
 5. Record each changed result as a session projection and reset the pruning TTL clock. Follow-up requests reuse the same projected bytes, including tool-loop continuations and later turns.
 
 The TTL gates new pruning rounds, not replay of previous projections. Projections
-survive Gateway restarts and eviction from the in-memory session cache through
-the transcript marker. Ordinary tool-result trims and the already-sent boundary
+survive Gateway restarts and idle-session unloading through the transcript
+marker. The last active attempt releases its prompt projections after cleanup;
+the next attempt restores them from the active transcript. Ordinary tool-result trims and the already-sent boundary
 are also saved before model requests when the projection changes, even with TTL
 pruning off. Unchanged projections add no new marker; restart restores the latest
 marker on the active branch. Old results retain their projected bytes through
@@ -135,6 +136,12 @@ To stop new pruning, set `mode: "off"`. Existing client-side projections keep
 replaying, including after a Gateway restart, until compaction removes their
 results or the session is reset.
 
+For a custom OpenAI-compatible provider, set the model's
+`compat.supportsPromptCacheKey` to `true` as well. This opts configured models using
+`openai-responses`, `openai-completions`, or `openai-chatgpt-responses` into
+cache-TTL pruning even when their provider ID is not `openai`. Provider plugins
+with their own cache-TTL policy still control eligibility.
+
 ## Pruning vs compaction
 
 |            | Pruning                                                              | Compaction                                              |
@@ -148,10 +155,11 @@ They complement each other -- pruning keeps tool output lean between compaction 
 ## Further reading
 
 - [Compaction](/concepts/compaction): summarization-based context reduction
-- [Gateway Configuration](/gateway/configuration): all pruning config knobs (`contextPruning.*`)
+- [`agents.defaults.contextPruning`](/gateway/config-agents/heartbeat-compaction-and-streaming#agents.defaults.contextpruning): all pruning config knobs (`contextPruning.*`)
 
 ## Related
 
 - [Session management](/concepts/session)
 - [Session tools](/concepts/session-tool)
 - [Context engine](/concepts/context-engine)
+- [Transcript hygiene](/reference/transcript-hygiene) - in-memory, provider-specific transcript sanitization applied before a run

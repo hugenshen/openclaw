@@ -233,4 +233,15 @@ describe("public session document", () => {
     expect(html).not.toContain("UNIQUE_TAIL_MARKER");
     expect(html).not.toContain("😀");
   });
+
+  it("keeps whole characters when the document budget leaves one code unit", () => {
+    const html = render([
+      { role: "user", content: "🙂 visible tail" },
+      { role: "user", content: "b".repeat(32_767) },
+      ...Array.from({ length: 7 }, () => ({ role: "user", content: "a".repeat(32_768) })),
+    ]);
+    expect(html.isWellFormed()).toBe(true);
+    expect(html).not.toContain("visible tail");
+    expect(html).toContain("Message shortened for this public view.");
+  });
 });

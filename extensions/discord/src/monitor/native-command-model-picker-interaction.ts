@@ -51,7 +51,7 @@ import {
   splitDiscordModelRef,
 } from "./native-command-model-picker-ui.js";
 import type {
-  DiscordModelPickerContext,
+  DiscordCommandArgContext,
   SafeDiscordInteractionCall,
 } from "./native-command-ui.types.js";
 
@@ -206,14 +206,8 @@ function resolveDiscordModelPickerModelIndex(params: {
   model: string;
 }): number | null {
   const models = listDiscordModelPickerProviderModels(params.data, params.provider);
-  if (!models.length) {
-    return null;
-  }
   const index = models.indexOf(params.model);
-  if (index < 0) {
-    return null;
-  }
-  return index + 1;
+  return index < 0 ? null : index + 1;
 }
 
 function resolveDiscordModelPickerModelSelection(params: {
@@ -224,9 +218,6 @@ function resolveDiscordModelPickerModelSelection(params: {
   requireModelToken?: boolean;
 }): string | null {
   const models = listDiscordModelPickerProviderModels(params.data, params.provider);
-  if (!models.length) {
-    return null;
-  }
   if (params.modelToken) {
     const matchingModels = models.filter(
       (model) => createDiscordModelPickerModelToken(params.provider, model) === params.modelToken,
@@ -242,7 +233,7 @@ function resolveDiscordModelPickerModelSelection(params: {
 async function handleDiscordModelPickerInteraction(params: {
   interaction: ButtonInteraction | StringSelectMenuInteraction;
   data: ComponentData;
-  ctx: DiscordModelPickerContext;
+  ctx: DiscordCommandArgContext;
   safeInteractionCall: SafeDiscordInteractionCall;
   dispatchCommandInteraction: DispatchDiscordCommandInteraction;
 }) {
@@ -451,9 +442,19 @@ async function handleDiscordModelPickerInteraction(params: {
     return;
   }
 
-  if (parsed.action === "model") {
-    const selectedModel = resolveModelPickerSelectionValue(interaction);
+  if (parsed.action === "model" || parsed.action === "pick") {
+    const selectedValue = resolveModelPickerSelectionValue(interaction);
     const provider = parsedProvider;
+    // Keep raw values from already-rendered menus distinct from new token values.
+    const selectedModel =
+      parsed.action === "pick"
+        ? resolveDiscordModelPickerModelSelection({
+            data: pickerData,
+            provider: provider ?? "",
+            modelToken: selectedValue ?? undefined,
+            requireModelToken: true,
+          })
+        : selectedValue;
     if (!provider || !selectedModel) {
       await showNotice(MODEL_PICKER_CHANGED_MESSAGE);
       return;
@@ -511,11 +512,8 @@ async function handleDiscordModelPickerInteraction(params: {
     const pendingModelIndex = selectedModel
       ? resolveDiscordModelPickerModelIndex({ data: pickerData, provider, model: selectedModel })
       : undefined;
-    // Runtime select customId carries modelBucket only when no pending
-    // model is set; otherwise derive from the pending model. As a final
-    // fallback, derive from the user's current durable model so the
-    // browse-bucket position survives a runtime change without anything
-    // pending.
+    // Pending model IDs omit the bucket; preserve browse position from the pending
+    // or current model when the callback does not carry one.
     const derivedModelBucket =
       parsed.modelBucket ??
       (selectedModel
@@ -670,7 +668,7 @@ async function handleDiscordModelPickerInteraction(params: {
 }
 
 type DiscordModelPickerFallbackParams = {
-  ctx: DiscordModelPickerContext;
+  ctx: DiscordCommandArgContext;
   safeInteractionCall: SafeDiscordInteractionCall;
   dispatchCommandInteraction: DispatchDiscordCommandInteraction;
 };

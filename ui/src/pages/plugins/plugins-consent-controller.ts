@@ -31,13 +31,11 @@ type PluginMutationSuccess<Result> = (
   result: Result,
   refreshError: string | null,
   client: GatewayBrowserClient,
-  isCurrent: () => boolean,
   isLatest: () => boolean,
 ) => Promise<void>;
 
 type PluginMutationOptions = {
   action: PluginMutationAction;
-  canDispatch?: () => boolean;
   confirm?: () => Promise<boolean>;
   preserveMessageWhilePending?: boolean;
 };
@@ -148,8 +146,7 @@ export class PluginsConsentController {
     },
   ): Promise<void> {
     const scope = this.host.gateway.capture();
-    const canDispatch = () =>
-      (options.canDispatch ?? this.host.canMutate)() && !this.getActiveInstall(rowKey);
+    const canDispatch = () => this.host.canMutate() && !this.getActiveInstall(rowKey);
     if (!scope || !canDispatch() || this.host.isBusy(rowKey)) {
       return;
     }
@@ -181,7 +178,7 @@ export class PluginsConsentController {
         { canDispatch: () => isCurrent() && canDispatch() },
       );
       if (isCurrent()) {
-        await onSuccess(mutation.value, mutation.refreshError, scope.client, isCurrent, isLatest);
+        await onSuccess(mutation.value, mutation.refreshError, scope.client, isLatest);
       }
     } catch (error) {
       if (isCurrent()) {
@@ -351,6 +348,25 @@ export class PluginsConsentController {
           error instanceof GatewayRequestError ? asOptionalRecord(error.details) : undefined;
         const persistence = asOptionalRecord(details?.persistence);
         const policyWarning = readPluginInstallPolicyWarning(error);
+        const canRetry = isGatewayProtocolResponseError(error) && !persistence && !policyWarning;
+        const savedInstall =
+          persistence?.operation === "install" &&
+          typeof persistence.pluginId === "string" &&
+          persistence.pluginId.trim()
+            ? persistence.pluginId
+            : undefined;
+        const failureState = savedInstall
+          ? "saved"
+          : details?.pluginInstallRejected === true
+            ? "rejected"
+            : canRetry
+              ? "retry"
+              : "unknown";
+        const failure = {
+          title: t(`pluginsPage.installProgress.${failureState}.title`),
+          recovery: t(`pluginsPage.installProgress.${failureState}.recovery`),
+          detail: formatUiError(error),
+        };
         const progress = this.installProgress.get(installIdentity);
         if (progress) {
           // Only a correlated final rejection proves an unsaved attempt can restart.
@@ -358,16 +374,13 @@ export class PluginsConsentController {
           this.installProgress.set(installIdentity, {
             ...progress,
             finishedAt: Date.now(),
-            canRetry: isGatewayProtocolResponseError(error) && !persistence && !policyWarning,
+            canRetry,
+            ...(!policyWarning || savedInstall ? { failure } : {}),
           });
           this.host.requestUpdate();
         }
-        if (
-          persistence?.operation === "install" &&
-          typeof persistence.pluginId === "string" &&
-          persistence.pluginId.trim()
-        ) {
-          const pluginId = persistence.pluginId;
+        if (savedInstall) {
+          const pluginId = savedInstall;
           const key = pluginRowKey(pluginId);
           const runtime = asOptionalRecord(details?.runtime);
           const phase = asOptionalRecord(details?.runtimeAttempt)?.phase ?? runtime?.phase;
@@ -410,8 +423,10 @@ export class PluginsConsentController {
           });
           return;
         }
-        const message = formatUiError(error);
-        this.host.setMessage(installIdentity, { kind: "error", text: message });
+        this.host.setMessage(installIdentity, {
+          kind: "error",
+          text: `${failure.recovery}\n${failure.detail}`,
+        });
       },
     );
   }

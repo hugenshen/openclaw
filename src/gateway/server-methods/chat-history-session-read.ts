@@ -1,3 +1,4 @@
+import { isPromiseLike } from "@openclaw/normalization-core/promise-like";
 import { resolveSessionStorePathCore } from "../../config/sessions/paths.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { measureDiagnosticsTimelineSpan } from "../../infra/diagnostics-timeline.js";
@@ -14,7 +15,11 @@ import {
   prepareSessionMutationFacts,
   SessionMutationFactsUnavailableError,
 } from "../session-sharing-preparation.js";
-import { isGatewayAdmin, resolveSessionVisibility } from "../session-sharing.js";
+import {
+  isGatewayAdmin,
+  prepareProjectedSessionSharing,
+  resolveSessionVisibility,
+} from "../session-sharing.js";
 import { resolveSessionStoreIdentity } from "../session-store-key.js";
 import { respondChatHistoryUnavailable, type ChatHistoryMethod } from "./chat-history-recovery.js";
 import type { GatewayRequestHandlerOptions } from "./types.js";
@@ -93,12 +98,11 @@ export async function prepareChatHistorySessionRead({
       store: {},
     };
   };
-  const authorizeSharing = (
-    current: NonNullable<ReturnType<typeof selectSession>>,
-    read: SessionRowReadView,
+  const authorizeSharingFacts = (
+    current: Pick<NonNullable<ReturnType<typeof selectSession>>, "entry" | "canonicalKey">,
+    sharing: ReturnType<typeof prepareProjectedSessionSharing>,
   ) => {
     sessionMutationAuthorization?.assertCurrent();
-    const sharing = prepareProjectedSessionPresentation(read, client).sharing;
     if (
       current.entry
         ? sharing.entryFilter?.(current.canonicalKey, current.entry) === false
@@ -109,6 +113,10 @@ export async function prepareChatHistorySessionRead({
     }
     return sharing;
   };
+  const authorizeSharing = (
+    current: NonNullable<ReturnType<typeof selectSession>>,
+    read: SessionRowReadView,
+  ) => authorizeSharingFacts(current, prepareProjectedSessionPresentation(read, client).sharing);
   const selectedSession = await measureDiagnosticsTimelineSpan(
     `gateway.${method}.session_entry`,
     () =>
@@ -160,17 +168,22 @@ export async function prepareChatHistorySessionRead({
         // Excluded metadata can refuse a read, never authorize transcript delivery.
         if (excludedEntry) {
           if (authorizeSharing({ ...current, entry: excludedEntry }, read)) {
-            respondChatHistoryUnavailable(
-              method,
-              respond,
-              "session changed while reading history; reload the conversation",
-            );
+            // Only a row the projection now serves changed mid-read; one it still omits stays unserved.
+            if (current.entry) {
+              respondChatHistoryUnavailable(
+                method,
+                respond,
+                "session changed while reading history; reload the conversation",
+              );
+            } else {
+              respond(false, undefined, hiddenSessionNotFound(current.canonicalKey));
+            }
           }
           return undefined;
         }
       }
       const currentEntry = current.entry;
-      // Task history separately validates its retained transcript; its live run may advance.
+      // Cron history separately validates its retained transcript; its live session may advance.
       if (
         entry &&
         (!currentEntry ||
@@ -220,6 +233,87 @@ export async function prepareChatHistorySessionRead({
       queries,
       readCurrentSharing,
       rowProjection,
+      async publishRetainedTranscript(publication: {
+        verify: () => Promise<boolean>;
+        requireCurrentSession: boolean;
+        sharing: NonNullable<ReturnType<typeof readCurrentSharing>>;
+        publish: () => void;
+      }) {
+        const facts = await prepareSessionMutationFacts({
+          cfg: context.getRuntimeConfig(),
+          sessionKey: canonicalKey,
+          agentId: sessionAgentId,
+          allowMissing: true,
+        });
+        try {
+          if (!(await publication.verify())) {
+            respondChatHistoryUnavailable(
+              method,
+              respond,
+              "retained transcript changed while reading history",
+            );
+            return;
+          }
+          signal?.throwIfAborted();
+          const currentConfig = context.getRuntimeConfig();
+          const current = facts.readCurrent(currentConfig);
+          const target = current.target;
+          if (
+            (entry && !target) ||
+            (target &&
+              (target.agentId !== sessionAgentId ||
+                target.canonicalKey !== canonicalKey ||
+                current.sourcePath !== storePath)) ||
+            (publication.requireCurrentSession && target?.entry.sessionId !== retainedSessionId)
+          ) {
+            respondChatHistoryUnavailable(
+              method,
+              respond,
+              "retained session changed while reading history",
+            );
+            return;
+          }
+          const sharing = authorizeSharingFacts(
+            { entry: target?.entry, canonicalKey },
+            prepareProjectedSessionSharing({
+              cfg: rowProjection.getPolicyConfig(),
+              client: client ?? null,
+              isMember: (candidate, identityId) =>
+                Boolean(
+                  target &&
+                  candidate.agentId === target.agentId &&
+                  candidate.canonicalKey === target.canonicalKey &&
+                  candidate.storePath === target.storePath &&
+                  current.membership.has(identityId),
+                ),
+            }),
+          );
+          if (!sharing) {
+            return;
+          }
+          const visibility = target ? resolveSessionVisibility(target.entry) : undefined;
+          const sharingRole = target ? sharing.roleForTarget(target) : undefined;
+          if (
+            visibility !== publication.sharing.visibility ||
+            sharingRole !== publication.sharing.sharingRole
+          ) {
+            respondChatHistoryUnavailable(
+              method,
+              respond,
+              "session access changed while reading history",
+            );
+            return;
+          }
+          // Retained facts and current caller policy authorize the final synchronous publication.
+          const result = publication.publish();
+          if (isPromiseLike(result)) {
+            void Promise.resolve(result).catch(() => {});
+            throw new Error("Retained history publication must remain synchronous");
+          }
+        } finally {
+          facts.release();
+        }
+      },
       release: () => excluded?.release(),
     };
   } catch (error) {

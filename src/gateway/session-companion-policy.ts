@@ -2,8 +2,20 @@ import {
   assertOperatorModelAllowed,
   type AdmittedRunOperatorAuthority,
 } from "../agents/admitted-run-context.js";
+import { resolveAgentDir, resolveAgentWorkspaceDir } from "../agents/agent-scope.js";
+import { resolveApiKeyForProviderCore } from "../agents/model-auth-provider.js";
+import { isProviderAuthError } from "../agents/model-auth-runtime-shared.js";
+import {
+  isCliRuntimeAliasForProvider,
+  resolveCliRuntimeExecutionProvider,
+} from "../agents/model-runtime-aliases.js";
+import { resolveDefaultModelForAgent } from "../agents/model-selection-config.js";
 import { resolveSimpleCompletionSelectionForAgent } from "../agents/simple-completion-runtime.js";
+import type { AgentSimpleCompletionSelection } from "../agents/simple-completion.types.js";
+import { readUtilityModelSetting } from "../agents/utility-model-setting.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import type { Model } from "../llm/types.js";
+import { SessionCompanionAskError } from "./session-companion-errors.js";
 
 export const SESSION_COMPANION_TOOLS = ["read", "sessions_history", "sessions_search"] as const;
 
@@ -45,6 +57,64 @@ export function resolveSessionCompanionModel(params: {
   return selection;
 }
 
+/**
+ * Use a CLI side question only when the existing direct route lacks provider
+ * authentication. Working direct routes retain images and read-only tools.
+ */
+export async function resolveSessionCompanionCliRuntime(params: {
+  cfg: OpenClawConfig;
+  agentId: string;
+  selection: Pick<AgentSimpleCompletionSelection, "provider" | "modelId" | "profileId">;
+}): Promise<string | undefined> {
+  const selected = resolveCliRuntimeExecutionProvider({
+    provider: params.selection.provider,
+    cfg: params.cfg,
+    agentId: params.agentId,
+    modelId: params.selection.modelId,
+    authProfileId: params.selection.profileId,
+  });
+  if (!selected && readUtilityModelSetting(params.cfg, params.agentId).kind !== "auto") {
+    return undefined;
+  }
+  const primary = resolveDefaultModelForAgent({ cfg: params.cfg, agentId: params.agentId });
+  const runtime = resolveCliRuntimeExecutionProvider({
+    provider: primary.provider,
+    cfg: params.cfg,
+    agentId: params.agentId,
+    modelId: primary.model,
+  });
+  const candidate =
+    selected ??
+    (runtime &&
+    isCliRuntimeAliasForProvider({
+      runtime,
+      provider: params.selection.provider,
+      cfg: params.cfg,
+    })
+      ? runtime
+      : undefined);
+  if (!candidate) {
+    return undefined;
+  }
+  try {
+    await resolveApiKeyForProviderCore({
+      provider: params.selection.provider,
+      modelId: params.selection.modelId,
+      profileId: params.selection.profileId,
+      lockedProfile: Boolean(params.selection.profileId),
+      cfg: params.cfg,
+      agentDir: resolveAgentDir(params.cfg, params.agentId),
+      workspaceDir: resolveAgentWorkspaceDir(params.cfg, params.agentId),
+    });
+    return undefined;
+  } catch (error) {
+    if (!isProviderAuthError(error, "missing-provider-auth")) {
+      throw error;
+    }
+    return candidate;
+  }
+}
+
 export function buildSessionCompanionSystemPrompt(sessionKey: string): string {
   return [
     `You are the read-only Side chat assistant observing session ${sessionKey}.`,
@@ -58,4 +128,14 @@ export function buildSessionCompanionSystemPrompt(sessionKey: string): string {
     "Answer from evidence in the inherited context, observer notes, and permitted tool reads; say plainly when you cannot know.",
     "Return a concise plain-text answer in American English with no markdown or JSON wrapper.",
   ].join(" ");
+}
+
+/** Validate the runner’s prepared model without a second route resolution or provider probe. */
+export function assertSessionCompanionImageInput(model: Pick<Model, "input">): void {
+  if (!model.input?.includes("image")) {
+    throw new SessionCompanionAskError(
+      "image-input-unsupported",
+      "The selected Side chat model does not support image input. Choose an image-capable utility model and retry.",
+    );
+  }
 }

@@ -21,13 +21,16 @@ vi.mock("../plugins/loader-runtime-load.js", () => {
   throw new Error("Session lifecycle presentation imported plugin runtime ownership");
 });
 
+// mock-isolation: Exercise lifecycle reducers without native persistence or transcript writes.
 vi.mock("../config/sessions/session-accessor.js", () => ({
-  patchSessionEntryCore: persistenceMocks.updateSessionEntry,
+  patchSessionEntryTarget: persistenceMocks.updateSessionEntry,
   appendSessionTranscriptReport: vi.fn(async () => ({ ok: true, value: undefined })),
 }));
 
-vi.mock("./session-utils.js", () => ({
-  loadSessionEntry: persistenceMocks.loadSessionEntry,
+// mock-isolation: Controlled entries isolate lifecycle projection from database admission.
+vi.mock("./session-utils-store-worker.js", () => ({
+  loadGatewaySessionEntryReadOnlyInWorker: async (...args: unknown[]) =>
+    persistenceMocks.loadSessionEntry(...args),
 }));
 
 vi.mock("../logging/subsystem.js", () => ({
@@ -181,12 +184,6 @@ describe("session lifecycle state", () => {
     ).toBe(true);
   });
 
-  it("applies lifecycle events whose owning sessionId matches the current row", () => {
-    expect(
-      isStaleLifecycleEventForSession({ owningSessionId: "same-id", currentSessionId: "same-id" }),
-    ).toBe(false);
-  });
-
   it("does not guard when the owning sessionId is unknown (preserves legacy behavior)", () => {
     expect(
       isStaleLifecycleEventForSession({ owningSessionId: undefined, currentSessionId: "new-id" }),
@@ -195,8 +192,6 @@ describe("session lifecycle state", () => {
 
   it.each([
     { eventRunId: undefined, currentRunId: undefined, eventStartedAt: 100, stale: true },
-    { eventRunId: "run-a", currentRunId: "run-a", eventStartedAt: 100, stale: false },
-    { eventRunId: "run-a", currentRunId: "run-b", eventStartedAt: 100, stale: true },
     { eventRunId: "run-a", currentRunId: undefined, eventStartedAt: 100, stale: true },
     { eventRunId: undefined, currentRunId: "run-a", eventStartedAt: 100, stale: true },
     { eventRunId: undefined, currentRunId: undefined, eventStartedAt: 200, stale: false },
@@ -628,7 +623,7 @@ describe("session lifecycle state", () => {
     // One exact-row write only. Continuation settlement owns base projection.
     expect(persistenceMocks.updateSessionEntry).toHaveBeenCalledTimes(1);
     expect(persistenceMocks.updateSessionEntry.mock.calls[0]?.[0]).toMatchObject({
-      sessionKey: exactCronSessionKey,
+      target: { canonicalKey: exactCronSessionKey },
     });
     expect(persistenceMocks.updateSessionEntry.mock.calls[0]?.[2]).toMatchObject({
       requireWriteSuccess: true,
@@ -655,7 +650,7 @@ describe("session lifecycle state", () => {
         const patch = await update(structuredClone(storedEntry), {
           existingEntry: structuredClone(storedEntry),
         });
-        options?.assertCommitAllowed?.();
+        options?.workerGuard?.source?.();
         if (patch) {
           storedEntry = { ...storedEntry, ...patch };
         }

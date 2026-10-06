@@ -8,8 +8,7 @@ import type { ModelCatalogResult } from "../../api/types.ts";
 import {
   clearModelCatalogCache,
   invalidateModelCatalogCache,
-  modelCatalogKey,
-  modelCatalogParams,
+  type ModelCatalogInvalidation,
 } from "../model-catalog-cache.ts";
 import { readSessionChangedEvent } from "../sessions/reconcile.ts";
 import type { UiSessionDefaultsHost } from "../sessions/session-key.ts";
@@ -21,7 +20,7 @@ export type ChatMetadataResponse = ChatMetadataResult &
 export type ChatMetadataUpdate =
   | { type: "invalidated"; scope: "session" | "full"; refreshSessionFacts: boolean }
   | { type: "loading" }
-  | { type: "result"; result: ChatMetadataResult; catalogChanged?: boolean }
+  | { type: "result"; result: ChatMetadataResult }
   | { type: "error"; error: unknown };
 export type ChatMetadataPublication = {
   isCurrent: () => boolean;
@@ -29,10 +28,10 @@ export type ChatMetadataPublication = {
   fail: (error: unknown) => void;
 };
 export type ChatMetadataRequest = {
+  controller: AbortController;
   promise: Promise<ChatMetadataResult>;
   publication: ChatMetadataPublication;
   revalidation: boolean;
-  setStartupRetryDeadline: (deadlineAt?: number) => void;
   start: () => void;
 };
 export type ChatMetadataRefresh = {
@@ -41,6 +40,7 @@ export type ChatMetadataRefresh = {
   isCurrent: () => boolean;
 };
 export type ChatMetadataRefreshRecord = ChatMetadataRefresh & {
+  controller: AbortController;
   phase: "waiting" | "admitted" | "inactive";
   revision: number;
   catalogRevision: number;
@@ -50,13 +50,13 @@ export type ChatMetadataRefreshRecord = ChatMetadataRefresh & {
 };
 export type ChatMetadataEntry = {
   scope: ChatMetadataParams;
+  catalogController: AbortController;
   result?: ChatMetadataResult;
   activeRequest?: ChatMetadataRequest;
   queuedRequest?: ChatMetadataRequest;
   writer?: object;
   refreshRevision: number;
   refreshAfter?: number;
-  validateCatalog?: boolean;
   catalogRevision: number;
   refresh?: ChatMetadataRefreshRecord;
   listeners: Map<(update: ChatMetadataUpdate) => void, () => boolean>;
@@ -79,12 +79,12 @@ export function invalidateChatMetadataStore(
   client: GatewayBrowserClient,
   scope?: ChatMetadataParams,
   sessionDefaults?: UiSessionDefaultsHost,
-  retireCatalog = false,
+  catalogInvalidation: ModelCatalogInvalidation | "preserve" = "refresh",
 ): void {
   // Catalog readers share this lifecycle; retire their copies before metadata listeners reload.
-  if (retireCatalog) {
+  if (catalogInvalidation === "clear") {
     clearModelCatalogCache(client, { requireSnapshot: true });
-  } else {
+  } else if (catalogInvalidation === "refresh") {
     invalidateModelCatalogCache(client, scope, sessionDefaults);
   }
   chatMetadataCache.get(client)?.invalidate(scope, sessionDefaults);
@@ -99,22 +99,7 @@ export function invalidateChatMetadataForSessionEvent(
   const changed = readSessionChangedEvent(source);
   const agentId = typeof source?.agentId === "string" ? source.agentId : undefined;
   const scope = changed ? { agentId, sessionKey: changed.key } : undefined;
-  const retainedKeys =
-    scope && isSessionMetadataInvalidation(source)
-      ? new Set(
-          Array.from(chatMetadataCache.get(client)?.entries.values() ?? [])
-            .filter((entry) => entry.listeners.size > 0)
-            .map((entry) => modelCatalogKey(modelCatalogParams(entry.scope))),
-        )
-      : undefined;
-  // Only subscribed exact projections can wait for metadata validation. Other
-  // aliases/views and coalesced activity reasons retain ordinary invalidation.
-  invalidateModelCatalogCache(
-    client,
-    scope ?? { agentId, sessionsOnly: true },
-    sessionDefaults,
-    retainedKeys,
-  );
+  invalidateModelCatalogCache(client, scope ?? { agentId, sessionsOnly: true }, sessionDefaults);
   chatMetadataCache.get(client)?.invalidate(scope, sessionDefaults, source);
 }
 

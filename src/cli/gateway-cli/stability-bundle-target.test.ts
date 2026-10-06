@@ -13,7 +13,7 @@ describe("normalizeStabilityBundleTarget", () => {
 
   it("keeps explicit paths and latest", () => {
     expect(normalizeStabilityBundleTarget("latest")).toBe("latest");
-    expect(normalizeStabilityBundleTarget("/tmp/bundle.json")).toBe("/tmp/bundle.json");
+    expect(normalizeStabilityBundleTarget("  /tmp/bundle.json  ")).toBe("/tmp/bundle.json");
   });
 
   it("rejects blank and whitespace-only --bundle values", () => {

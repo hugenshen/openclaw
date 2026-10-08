@@ -22,10 +22,10 @@ export function getDispatchTestMocks() {
   return dispatchTestMocks;
 }
 
-vi.mock("../../agents/worktrees/service.js", () => ({
-  managedWorktrees: {
-    findLiveByOwner: dispatchTestMocks.findLiveByOwner,
-  },
+vi.mock("../../agents/worktrees/registry-read.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../agents/worktrees/registry-read.js")>()),
+  readLiveRegistryWorktreeByOwner: (_context: unknown, ...args: unknown[]) =>
+    dispatchTestMocks.findLiveByOwner(...args),
 }));
 
 vi.mock("../../process/exec.js", async () => {
@@ -145,7 +145,12 @@ export function makeDispatchTestContext(
         clientId: GATEWAY_CLIENT_IDS.NODE_HOST,
         clientMode: GATEWAY_CLIENT_MODES.NODE,
         protocolFeature: NODE_WORKER_SUPERVISOR_PROTOCOL_FEATURE,
-        workerHost: { enabled: true, capacity: { total: 2, available: 2 } },
+        workerHost: {
+          enabled: true,
+          capacity: { total: 2, available: 2 },
+          capturedExecPolicy: true,
+          promptContext: 1,
+        },
         commands: observed?.commands ?? ["system.run", "codex.exec-server.stdio.v1"],
       };
       return { available: true, node };
@@ -201,9 +206,11 @@ export async function invokeSessionDispatch(
     profileId: "test",
   },
   sessionMutationAuthorization?: SessionMutationAuthorization,
+  signal?: AbortSignal,
 ) {
   const respond = vi.fn() as unknown as RespondFn;
   await getSessionDispatchHandler()({
+    signal,
     req: { id: "dispatch-request" } as never,
     params: { key: dispatchTestSessionKey, ...target },
     respond,

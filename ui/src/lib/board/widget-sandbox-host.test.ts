@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { WIDGET_HTML_MAX_UTF8_BYTES } from "../../../../packages/gateway-protocol/src/schema/canvas.ts";
 import type { BoardWidget } from "./types.ts";
 import { BoardWidgetSandboxHost } from "./widget-sandbox-host.ts";
 
@@ -935,5 +936,59 @@ describe("BoardWidgetSandboxHost", () => {
     expect(onReadyTimeout).toHaveBeenCalledTimes(2);
     expect(reloadSpy).toHaveBeenCalledOnce();
     expect(onLoadFailed).not.toHaveBeenCalled();
+  });
+
+  it("rejects Gateway widget HTML that advertises more than the protocol byte cap", async () => {
+    const cancel = vi.fn(() => new Promise<void>(() => {}));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        return new Response(
+          new ReadableStream({
+            start() {},
+            cancel,
+          }),
+          {
+            status: 200,
+            headers: {
+              "Content-Type": "text/html; charset=utf-8",
+              "Content-Length": String(WIDGET_HTML_MAX_UTF8_BYTES + 1),
+            },
+          },
+        );
+      }),
+    );
+    const frame = document.createElement("iframe");
+    document.body.append(frame);
+    const onError = vi.fn();
+    const onLoadFailed = vi.fn();
+    const onLoaded = vi.fn();
+    const started = Date.now();
+    const host = new BoardWidgetSandboxHost(
+      hostOptions(frame, {
+        onError,
+        onLoadFailed,
+        onLoaded,
+        resolveFrameUrl: () => "/widget",
+      }),
+    );
+    notifyProxyReady(host, frame);
+    try {
+      await vi.waitFor(() => expect(onError).toHaveBeenCalledOnce());
+      expect(onLoaded).not.toHaveBeenCalled();
+      expect(onLoadFailed).not.toHaveBeenCalled();
+      expect(onError.mock.calls[0]?.[0]).toMatchObject({
+        kind: "rejected",
+        message: "widget content exceeded size limit",
+      });
+      expect(cancel).toHaveBeenCalledOnce();
+      const elapsedMs = Date.now() - started;
+      expect(elapsedMs).toBeLessThan(1_000);
+      console.log(
+        `[board widget html cap proof] cap_bytes=${WIDGET_HTML_MAX_UTF8_BYTES} rejected=true cancel_called=true elapsed_ms=${elapsedMs}`,
+      );
+    } finally {
+      host.dispose();
+    }
   });
 });

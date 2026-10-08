@@ -109,6 +109,11 @@ async function fetchChatCerts(): Promise<Record<string, string>> {
     cachedCerts = { fetchedAt: now, certs };
     return certs;
   } finally {
+    // Status-only certs responses leave an unread body. Start cancellation
+    // before release; awaiting it can deadlock when debug capture tees the stream.
+    if (!response.bodyUsed) {
+      void response.body?.cancel().catch(() => undefined);
+    }
     await release();
   }
 }

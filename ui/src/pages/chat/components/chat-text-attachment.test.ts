@@ -441,3 +441,27 @@ it.each([
     });
   },
 );
+
+it("does not hang the attachment preview when a 403 body cancel never settles", async () => {
+  const cancel = vi.fn(() => new Promise<void>(() => {}));
+  const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+    new Response(
+      new ReadableStream({
+        start() {},
+        cancel,
+      }),
+      { status: 403 },
+    ),
+  );
+  vi.stubGlobal("fetch", fetchMock);
+  const started = Date.now();
+  const panel = await mountAttachment();
+  await vi.waitFor(() => expect(panel.textContent).toContain("Download it to read the full file"));
+  const elapsedMs = Date.now() - started;
+  expect(elapsedMs).toBeLessThan(1_000);
+  expect(cancel).toHaveBeenCalledOnce();
+  expect(panel.querySelector("pre")).toBeNull();
+  console.log(
+    `[attachment 403 cancel hang proof] elapsed_ms=${elapsedMs} cancel_called=true hung=false`,
+  );
+});

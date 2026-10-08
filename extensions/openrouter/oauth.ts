@@ -198,6 +198,8 @@ async function exchangeOpenRouterOAuthCode(params: {
         : AbortSignal.timeout(OPENROUTER_OAUTH_FETCH_TIMEOUT_MS),
     },
     beforeRequest: params.assertCurrent,
+    // Guard-owned timeoutMs covers DNS/proxy preflight; init.signal alone does not.
+    timeoutMs: OPENROUTER_OAUTH_FETCH_TIMEOUT_MS,
     // The endpoint is fixed; preserve operator-configured proxy routing.
     mode: "trusted_env_proxy",
     auditContext: "openrouter.oauth",

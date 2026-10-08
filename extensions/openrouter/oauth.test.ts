@@ -226,7 +226,11 @@ describe("OpenRouter OAuth", () => {
       expect(openUrl).not.toHaveBeenCalled();
       expect(fetchImpl).toHaveBeenCalledTimes(1);
       expect(ssrfRuntime.fetchWithSsrFGuard).toHaveBeenCalledWith(
-        expect.objectContaining({ mode: "trusted_env_proxy" }),
+        expect.objectContaining({
+          mode: "trusted_env_proxy",
+          timeoutMs: 30_000,
+          auditContext: "openrouter.oauth",
+        }),
       );
       expect(releaseGuard).toHaveBeenCalledTimes(1);
       const [exchangeUrl, exchangeInit] = fetchImpl.mock.calls[0]!;
@@ -259,6 +263,32 @@ describe("OpenRouter OAuth", () => {
       ]);
     },
   );
+
+  it("passes timeoutMs so OAuth token exchange cannot hang through SSRF DNS preflight", async () => {
+    const { ctx } = createOpenRouterOAuthContext({ isRemote: true });
+    const redirectUrl = "https://gateway.example.com/auth/callback?flow=hosted-timeout";
+    ctx.oauth.authorize = async ({ buildAuthorizationUrl, state }) => {
+      buildAuthorizationUrl(redirectUrl);
+      return { code: "HOSTEDCODE", state };
+    };
+    const actual = ssrfRuntime.fetchWithSsrFGuard;
+    const started = Date.now();
+    vi.spyOn(ssrfRuntime, "fetchWithSsrFGuard").mockImplementation(async (opts) => {
+      expect(opts.timeoutMs).toBe(30_000);
+      expect(opts.mode).toBe("trusted_env_proxy");
+      return await actual({
+        ...opts,
+        timeoutMs: 40,
+        mode: "strict",
+        pinDns: true,
+        lookupFn: () => new Promise(() => {}),
+      });
+    });
+    await expect(createOpenRouterOAuthAuthMethod().run(ctx)).rejects.toThrow(
+      /abort|timed out|timeout/i,
+    );
+    expect(Date.now() - started).toBeLessThan(2000);
+  });
 
   it("keeps malformed manual input correctable in the registered OAuth method", async () => {
     const { ctx, text } = createOpenRouterOAuthContext({ isRemote: true });

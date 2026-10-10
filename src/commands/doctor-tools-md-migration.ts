@@ -1,4 +1,5 @@
 /** Doctor-owned migration from workspace TOOLS.md into the AGENTS.md Tools section. */
+import { isUtf8 } from "node:buffer";
 import { createHash } from "node:crypto";
 import syncFs from "node:fs";
 import fs from "node:fs/promises";
@@ -76,7 +77,11 @@ async function readMigrationFileSnapshot(params: {
     ) {
       throw new Error(`${params.label} changed while opening it for migration`);
     }
-    const content = await handle.readFile("utf8");
+    const bytes = await handle.readFile();
+    if (!isUtf8(bytes)) {
+      throw new Error(`${params.label} must be valid UTF-8`);
+    }
+    const content = bytes.toString("utf8");
     const currentStat = await fs.lstat(params.filePath);
     if (currentStat.dev !== openedStat.dev || currentStat.ino !== openedStat.ino) {
       throw new Error(`${params.label} changed while opening it for migration`);

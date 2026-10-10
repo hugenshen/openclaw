@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -5,17 +6,69 @@ import { createDeferred } from "../../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { requireGit } from "../../agents/worktrees/git.js";
 import { runNodeWorkerWorkspaceTransfer } from "../../node-host/node-worker-transfer-client.js";
-import { runCommandWithTimeout } from "../../process/exec.js";
-import { createNodeWorkspaceTransferService } from "./node-workspace-transfer-service.js";
+import * as workspaceCommands from "../../node-host/node-worker-workspace-commands.js";
+import { runCommandBuffered, runCommandWithTimeout } from "../../process/exec.js";
+import {
+  createNodeWorkspaceTransferService,
+  type NodeWorkspaceTransferService,
+} from "./node-workspace-transfer-service.js";
+import type { NodeWorkspaceTransferSnapshot } from "./node-workspace-transfer-snapshot.js";
 import {
   startNodeWorkspaceTransferTestServer,
   transferOwner,
 } from "./node-workspace-transfer.test-support.js";
+import { MAX_WORKSPACE_MANIFEST_BYTES } from "./workspace-inventory-limits.js";
 import { captureWorkspaceManifest } from "./workspace-manifest-worker.js";
 import { serializeWorkerWorkspaceManifest } from "./workspace-manifest.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 afterEach(() => vi.restoreAllMocks());
+
+/** Serves one prebuilt Git pack/manifest through the shipped Gateway transfer HTTP path. */
+function createPackBackedTransferService(params: {
+  environmentId: string;
+  token: string;
+  snapshot: NodeWorkspaceTransferSnapshot;
+  packPath: string;
+}): NodeWorkspaceTransferService {
+  const signal = AbortSignal.timeout(10 * 60_000);
+  const authorization = {
+    context: {
+      environmentId: params.environmentId,
+      signal,
+    },
+    capability: {
+      direction: "download" as const,
+      token: params.token,
+      manifestRef: params.snapshot.manifestRef,
+      expiresAtMs: Date.now() + 10 * 60_000,
+      isAuthorized: () => true,
+    },
+    route: {
+      kind: "manifest" as const,
+      direction: "download" as const,
+      environmentId: params.environmentId,
+      manifestRef: params.snapshot.manifestRef,
+    },
+  };
+  return {
+    authorize: ({ route, token }) => {
+      if (
+        token !== params.token ||
+        route.environmentId !== params.environmentId ||
+        (route.kind !== "manifest" && route.kind !== "pack") ||
+        route.manifestRef !== params.snapshot.manifestRef
+      ) {
+        return undefined;
+      }
+      return { ...authorization, route };
+    },
+    isAuthorizationCurrent: () => true,
+    authorizationSignal: () => signal,
+    snapshot: () => params.snapshot,
+    pack: async () => params.packPath,
+  } as NodeWorkspaceTransferService;
+}
 
 async function createGitTransfer() {
   const root = await fs.realpath(tempDirs.make("node-workspace-lazy-pack-"));
@@ -265,4 +318,175 @@ describe("node workspace Git pack downloads", () => {
       }
     },
   );
+
+  it("preserves the prior workspace when Gateway Git stdout is truncated during download", async () => {
+    const fixture = await createGitTransfer();
+    const workspaceDir = path.join(fixture.root, "node-workspace");
+    await fs.mkdir(workspaceDir);
+    await fs.writeFile(path.join(workspaceDir, "previous.txt"), "preserve prior workspace\n");
+    const original = workspaceCommands.runWorkspaceCommand;
+    const spy = vi
+      .spyOn(workspaceCommands, "runWorkspaceCommand")
+      .mockImplementation(async (params) => {
+        if (params.argv.includes("rev-parse") && params.argv.includes("--verify")) {
+          // Real Git under an 8-byte cap: exit 0 with truncation metadata.
+          return await original({ ...params, maxOutputBytes: 8 });
+        }
+        return await original(params);
+      });
+    try {
+      await expect(
+        runNodeWorkerWorkspaceTransfer({
+          gatewayUrl: fixture.gatewayUrl,
+          environmentId: "environment",
+          workspaceDir,
+          manifestHome: fixture.root,
+          transfer: {
+            direction: "download",
+            token: fixture.prepared.token,
+            manifestRef: fixture.prepared.snapshot.manifestRef,
+          },
+        }),
+      ).rejects.toMatchObject({
+        message: "workspace-transfer-failed: transfer did not complete",
+        cause: expect.objectContaining({
+          message: expect.stringContaining("command output was truncated"),
+        }),
+      });
+      expect(await fs.readFile(path.join(workspaceDir, "previous.txt"), "utf8")).toBe(
+        "preserve prior workspace\n",
+      );
+      await expect(fs.access(path.join(workspaceDir, "input.txt"))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+    } finally {
+      spy.mockRestore();
+      await fixture.close();
+    }
+  });
+
+  it("completes a Gateway download when the Git index exceeds the former 64 MiB buffer cap", async () => {
+    const root = await fs.realpath(tempDirs.make("node-workspace-index-over-64mib-"));
+    const source = path.join(root, "source");
+    const workspaceDir = path.join(root, "workspace");
+    const packPath = path.join(root, "base.pack");
+    await fs.mkdir(source);
+    await fs.mkdir(workspaceDir);
+    const content = Buffer.from("tracked from gateway\n");
+    await fs.writeFile(path.join(source, "tracked.txt"), content);
+    await requireGit(source, ["init", "--quiet"]);
+    await requireGit(source, ["config", "user.name", "Workspace Test"]);
+    await requireGit(source, ["config", "user.email", "workspace@example.invalid"]);
+    await requireGit(source, ["add", "tracked.txt"]);
+    const blob = (
+      await runCommandWithTimeout(["git", "-C", source, "hash-object", "-w", "--stdin"], {
+        input: "x\n",
+        timeoutMs: 10_000,
+      })
+    ).stdout.trim();
+    // Shared-blob index entries inflate ls-files past the former buffered
+    // MAX_WORKSPACE_MANIFEST_BYTES cap without a multi-GiB pack or worktree.
+    // Stay under MAX_WORKSPACE_GIT_CANDIDATES so post-transfer verify still runs.
+    const indexInfoPath = path.join(root, "index-info");
+    const indexInfo = await fs.open(indexInfoPath, "w");
+    try {
+      let chunk = "";
+      for (let i = 0; i < 900_000; i += 1) {
+        chunk += `100644 ${blob}\te/${String(i).padStart(6, "0")}/padding-bytes.txt\n`;
+        if (chunk.length >= 8 * 1024 * 1024) {
+          await indexInfo.write(chunk);
+          chunk = "";
+        }
+      }
+      if (chunk) {
+        await indexInfo.write(chunk);
+      }
+    } finally {
+      await indexInfo.close();
+    }
+    const indexInfoFd = await fs.open(indexInfoPath, "r");
+    try {
+      const indexed = await runCommandWithTimeout(
+        ["git", "-C", source, "update-index", "--add", "--index-info"],
+        {
+          stdinFileDescriptor: indexInfoFd.fd,
+          timeoutMs: 120_000,
+        },
+      );
+      expect(indexed.code).toBe(0);
+    } finally {
+      await indexInfoFd.close();
+    }
+    await requireGit(source, ["commit", "--quiet", "-m", "index over former buffer cap"]);
+    const commit = await requireGit(source, ["rev-parse", "HEAD"]);
+    const listing = await runCommandBuffered(["git", "-C", source, "ls-files", "--stage", "-z"], {
+      maxOutputBytes: 128 * 1024 * 1024,
+    });
+    expect(listing.code).toBe(0);
+    expect(listing.stdout.byteLength).toBeGreaterThan(MAX_WORKSPACE_MANIFEST_BYTES);
+    const packed = await runCommandBuffered(
+      ["git", "-C", source, "pack-objects", "--stdout", "--revs"],
+      { input: `${commit}\n`, maxOutputBytes: 16 * 1024 * 1024 },
+    );
+    expect(packed.code).toBe(0);
+    await fs.writeFile(packPath, packed.stdout);
+    const rawManifest = serializeWorkerWorkspaceManifest({
+      version: 1,
+      baseCommit: commit,
+      entries: [
+        {
+          path: "tracked.txt",
+          type: "file",
+          mode: 0o644,
+          size: content.byteLength,
+          sha256: createHash("sha256").update(content).digest("hex"),
+        },
+      ],
+    });
+    const manifestRef = `sha256:${createHash("sha256").update(rawManifest).digest("hex")}`;
+    const token = "download-token";
+    const environmentId = "environment-large-index";
+    const server = await startNodeWorkspaceTransferTestServer(
+      createPackBackedTransferService({
+        environmentId,
+        token,
+        packPath,
+        snapshot: {
+          root: source,
+          manifestRef,
+          rawManifest,
+          manifest: {
+            version: 1,
+            baseCommit: commit,
+            entries: [
+              {
+                path: "tracked.txt",
+                type: "file",
+                mode: 0o644,
+                size: content.byteLength,
+                sha256: createHash("sha256").update(content).digest("hex"),
+              },
+            ],
+          },
+        },
+      }),
+    );
+    try {
+      await expect(
+        runNodeWorkerWorkspaceTransfer({
+          gatewayUrl: server.gatewayUrl,
+          environmentId,
+          workspaceDir,
+          manifestHome: root,
+          transfer: { direction: "download", token, manifestRef },
+        }),
+      ).resolves.toBe(manifestRef);
+      await expect(fs.readFile(path.join(workspaceDir, "tracked.txt"))).resolves.toEqual(content);
+      await expect(fs.access(path.join(workspaceDir, "e"))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+    } finally {
+      await server.close();
+    }
+  });
 });

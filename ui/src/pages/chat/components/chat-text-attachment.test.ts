@@ -1,8 +1,43 @@
 /* @vitest-environment jsdom */
 
+import { createServer, type Server } from "node:http";
+import type { AddressInfo } from "node:net";
 import { afterEach, expect, it, vi } from "vitest";
 import type { SidebarContent } from "./chat-sidebar-content-types.ts";
 import "./chat-detail-panel.ts";
+
+async function listenOnLoopback(server: Server): Promise<string> {
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      server.off("error", reject);
+      resolve();
+    });
+  });
+  const address = server.address() as AddressInfo;
+  return `http://127.0.0.1:${address.port}`;
+}
+
+async function closeServer(server: Server): Promise<void> {
+  if (!server.listening) {
+    return;
+  }
+  const closed = new Promise<void>((resolve, reject) => {
+    server.close((error) => (error ? reject(error) : resolve()));
+  });
+  server.closeAllConnections();
+  await closed;
+}
+
+/** Route relative Control UI attachment URLs to a real loopback HTTP server. */
+function useLoopbackFetch(baseUrl: string): void {
+  const nativeFetch = globalThis.fetch.bind(globalThis);
+  vi.stubGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) => {
+    const requestUrl =
+      typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    return nativeFetch(new URL(requestUrl, baseUrl), init);
+  });
+}
 
 async function mountAttachment(
   overrides: Partial<Extract<SidebarContent, { kind: "attachment" }>> = {},
@@ -442,26 +477,35 @@ it.each([
   },
 );
 
-it("does not hang the attachment preview when a 403 body cancel never settles", async () => {
-  const cancel = vi.fn(() => new Promise<void>(() => {}));
-  const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
-    new Response(
-      new ReadableStream({
-        start() {},
-        cancel,
-      }),
-      { status: 403 },
-    ),
-  );
-  vi.stubGlobal("fetch", fetchMock);
-  const started = Date.now();
-  const panel = await mountAttachment();
-  await vi.waitFor(() => expect(panel.textContent).toContain("Download it to read the full file"));
-  const elapsedMs = Date.now() - started;
-  expect(elapsedMs).toBeLessThan(1_000);
-  expect(cancel).toHaveBeenCalledOnce();
-  expect(panel.querySelector("pre")).toBeNull();
-  console.log(
-    `[attachment 403 cancel hang proof] elapsed_ms=${elapsedMs} cancel_called=true hung=false`,
-  );
+it("does not hang the attachment preview when a real HTTP 403 body never finishes", async () => {
+  let socketClosed = false;
+  let requestCount = 0;
+  const server = createServer((request, response) => {
+    requestCount += 1;
+    request.socket.once("close", () => {
+      socketClosed = true;
+    });
+    // Keep the error body open so cancellation is observable on the wire.
+    response.writeHead(403, {
+      "content-type": "text/plain; charset=utf-8",
+      "content-length": "1048576",
+    });
+    response.write("denied-preview-body");
+  });
+  const baseUrl = await listenOnLoopback(server);
+  useLoopbackFetch(baseUrl);
+  try {
+    const panel = await mountAttachment();
+    await vi.waitFor(() =>
+      expect(panel.textContent).toContain("Download it to read the full file"),
+    );
+    expect(panel.querySelector("pre")).toBeNull();
+    expect(requestCount).toBe(1);
+    await vi.waitFor(() => expect(socketClosed).toBe(true), { timeout: 2_000 });
+    console.log(
+      `[attachment 403 cancel hang proof] transport=node:http+fetch request_count=${requestCount} socket_closed=true hung=false fallback=true`,
+    );
+  } finally {
+    await closeServer(server);
+  }
 });

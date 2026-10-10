@@ -349,6 +349,60 @@ describe("skill workshop proposals", () => {
     expect((await inspectSkillProposal(proposal.record.id))?.record.status).toBe("applied");
   });
 
+  it("rejects a malformed UTF-8 draft before applying a workspace skill", async () => {
+    const workspaceDir = await makeWorkspace();
+    const proposal = await proposeCreateSkill({
+      workspaceDir,
+      name: "Utf8 Guard",
+      description: "Keep malformed drafts off disk",
+      content: "# Utf8 Guard\n\nKeep 合法 notes.\n",
+    });
+    const draftFile = path.join(
+      stateDir,
+      "skill-workshop",
+      "proposals",
+      proposal.record.id,
+      proposal.record.draftFile,
+    );
+    const poisoned = Buffer.concat([
+      Buffer.from("# Utf8 Guard\n\nKeep "),
+      Buffer.from([0xff]),
+      Buffer.from(" notes.\n"),
+    ]);
+    await fs.writeFile(draftFile, poisoned);
+
+    await expect(
+      applySkillProposal({
+        workspaceDir,
+        proposalId: proposal.record.id,
+      }),
+    ).rejects.toThrow(/valid UTF-8/);
+
+    await expect(fs.readFile(draftFile)).resolves.toEqual(poisoned);
+    await expect(fs.access(proposal.record.target.skillFile)).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  });
+
+  it("applies a valid Unicode draft including a literal replacement character", async () => {
+    const workspaceDir = await makeWorkspace();
+    const proposal = await proposeCreateSkill({
+      workspaceDir,
+      name: "Utf8 Guard",
+      description: "Keep legal Unicode",
+      content: "# Utf8 Guard\n\nKeep 合法 � 😀 notes.\n",
+    });
+
+    const applied = await applySkillProposal({
+      workspaceDir,
+      proposalId: proposal.record.id,
+    });
+
+    await expect(fs.readFile(applied.targetSkillFile, "utf8")).resolves.toBe(
+      '---\nname: "utf8-guard"\ndescription: "Keep legal Unicode"\n---\n\n# Utf8 Guard\n\nKeep 合法 � 😀 notes.\n',
+    );
+  });
+
   it("persists the reason when applying a proposal", async () => {
     const workspaceDir = await makeWorkspace();
     const proposal = await proposeCreateSkill({

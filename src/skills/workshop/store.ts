@@ -1,3 +1,4 @@
+import { isUtf8 } from "node:buffer";
 import crypto from "node:crypto";
 import path from "node:path";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
@@ -95,6 +96,13 @@ export function createSkillProposalId(name: string, now = new Date()): string {
 
 function contentSizeBytes(content: string): number {
   return Buffer.byteLength(content, "utf8");
+}
+
+function decodeWorkshopTextFile(buffer: Buffer, label: string): string {
+  if (!isUtf8(buffer)) {
+    throw new Error(`Skill proposal files must be valid UTF-8: ${label}`);
+  }
+  return buffer.toString("utf8");
 }
 
 function assertSkillProposalContentSize(content: string): void {
@@ -512,7 +520,7 @@ async function readProposalSupportFiles(
       maxBytes: MAX_WORKSPACE_SKILL_SUPPORT_FILE_BYTES,
       symlinks: "reject",
     });
-    const content = read.buffer.toString("utf8");
+    const content = decodeWorkshopTextFile(read.buffer, filePath);
     const sizeBytes = contentSizeBytes(content);
     const hash = hashSkillProposalContent(content);
     if (file.sizeBytes !== sizeBytes || file.hash !== hash) {
@@ -535,7 +543,7 @@ export async function readSkillProposalDraft(
       maxBytes: MAX_PROPOSAL_BYTES,
       symlinks: "reject",
     });
-    return draft.buffer.toString("utf8");
+    return decodeWorkshopTextFile(draft.buffer, PROPOSAL_DRAFT_FILE);
   } catch (error) {
     if (error instanceof FsSafeError && error.code === "not-found") {
       throw new SkillProposalDraftMissingError(record.id, { cause: error });

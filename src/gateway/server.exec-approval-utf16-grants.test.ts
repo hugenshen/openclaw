@@ -109,171 +109,167 @@ describe("Gateway WS exec approval UTF-16 display bounds", () => {
     gateway = undefined;
   });
 
-  it(
-    "delivers surrogate-safe standing-grant card previews and grants.list caps over WS",
-    async () => {
-      const jobName = `${"n".repeat(127)}${LOBSTER}`;
-      // Card command cap is 256: emoji must sit on that boundary.
-      const cardCommand = `${"a".repeat(255)}${LOBSTER}`;
-      // Grant listing caps are 512 for command/cwd.
-      const listCommand = `${"c".repeat(511)}${LOBSTER}`;
-      const listCwd = `${"b".repeat(511)}${LOBSTER}`;
-      const cardRunId = `run-utf16-card-${randomUUID()}`;
-      const listRunId = `run-utf16-list-${randomUUID()}`;
-      const cardApprovalId = `approval-utf16-card-${randomUUID()}`;
-      const listApprovalId = `approval-utf16-list-${randomUUID()}`;
+  it("delivers surrogate-safe standing-grant card previews and grants.list caps over WS", async () => {
+    const jobName = `${"n".repeat(127)}${LOBSTER}`;
+    // Card command cap is 256: emoji must sit on that boundary.
+    const cardCommand = `${"a".repeat(255)}${LOBSTER}`;
+    // Grant listing caps are 512 for command/cwd.
+    const listCommand = `${"c".repeat(511)}${LOBSTER}`;
+    const listCwd = `${"b".repeat(511)}${LOBSTER}`;
+    const cardRunId = `run-utf16-card-${randomUUID()}`;
+    const listRunId = `run-utf16-list-${randomUUID()}`;
+    const cardApprovalId = `approval-utf16-card-${randomUUID()}`;
+    const listApprovalId = `approval-utf16-list-${randomUUID()}`;
 
-      gateway = await createGatewaySuiteHarness({
-        serverOptions: { bind: "loopback", auth: { mode: "none" } },
-      });
-      await gateway.server.startupSettled;
+    gateway = await createGatewaySuiteHarness({
+      serverOptions: { bind: "loopback", auth: { mode: "none" } },
+    });
+    await gateway.server.startupSettled;
 
-      const { jobId, revision } = seedCronJob(jobName);
+    const { jobId, revision } = seedCronJob(jobName);
 
-      const observer = await gateway.openWs();
-      sockets.push(observer);
-      await connectOk(observer, {
-        scopes: ["operator.admin"],
-        caps: [GATEWAY_CLIENT_CAPS.APPROVALS],
-      });
+    const observer = await gateway.openWs();
+    sockets.push(observer);
+    await connectOk(observer, {
+      scopes: ["operator.admin"],
+      caps: [GATEWAY_CLIENT_CAPS.APPROVALS],
+    });
 
-      const requester = await gateway.openWs();
-      sockets.push(requester);
-      await connectOk(requester, { scopes: ["operator.admin"] });
+    const requester = await gateway.openWs();
+    sockets.push(requester);
+    await connectOk(requester, { scopes: ["operator.admin"] });
 
-      unregisterCronSource = registerCronRunExecSource(cardRunId, {
+    unregisterCronSource = registerCronRunExecSource(cardRunId, {
+      agentId: "main",
+      jobId,
+      jobConfigRevision: revision,
+      jobName,
+    });
+
+    const cardRequested = onceMessage<{
+      type: string;
+      event?: string;
+      payload?: ApprovalRequestedPayload;
+    }>(
+      observer,
+      (message) =>
+        message.type === "event" &&
+        message.event === "exec.approval.requested" &&
+        message.payload?.id === cardApprovalId,
+      30_000,
+    );
+
+    const cardAccepted = await rpcReq<{ id: string; status: string; deliveryRoute?: string }>(
+      requester,
+      "exec.approval.request",
+      {
+        id: cardApprovalId,
+        command: cardCommand,
+        host: "gateway",
         agentId: "main",
-        jobId,
-        jobConfigRevision: revision,
-        jobName,
-      });
+        runId: cardRunId,
+        twoPhase: true,
+        // Approval-capable observer is the delivery route; do not suppress the card.
+        timeoutMs: 120_000,
+      },
+      30_000,
+    );
+    expect(cardAccepted.ok).toBe(true);
+    expect(cardAccepted.payload?.status).toBe("accepted");
+    expect(cardAccepted.payload?.deliveryRoute).toBe("approval-client");
 
-      const cardRequested = onceMessage<{
-        type: string;
-        event?: string;
-        payload?: ApprovalRequestedPayload;
-      }>(
-        observer,
-        (message) =>
-          message.type === "event" &&
-          message.event === "exec.approval.requested" &&
-          message.payload?.id === cardApprovalId,
-        30_000,
-      );
+    const cardEvent = await cardRequested;
+    const scope = cardEvent.payload?.request?.scope;
+    expect(scope?.kind).toBe("standing-grant");
+    const automation = scope?.automation ?? "";
+    const scopedCommand = scope?.command ?? "";
+    expect(hasUnpairedSurrogate(automation)).toBe(false);
+    expect(hasUnpairedSurrogate(scopedCommand)).toBe(false);
+    expect(automation).toBe("n".repeat(127));
+    expect(scopedCommand).toBe("a".repeat(255));
+    expect(automation).not.toContain(LOBSTER);
+    expect(scopedCommand).not.toContain(LOBSTER);
+    console.log(
+      `[gateway-ws exec.approval.requested standing-grant card utf16 proof] deliveryRoute=approval-client automation_len=${automation.length} command_len=${scopedCommand.length} unpaired=false boundaries=128,256`,
+    );
 
-      const cardAccepted = await rpcReq<{ id: string; status: string; deliveryRoute?: string }>(
-        requester,
-        "exec.approval.request",
-        {
-          id: cardApprovalId,
-          command: cardCommand,
-          host: "gateway",
-          agentId: "main",
-          runId: cardRunId,
-          twoPhase: true,
-          // Approval-capable observer is the delivery route; do not suppress the card.
-          timeoutMs: 120_000,
-        },
-        30_000,
-      );
-      expect(cardAccepted.ok).toBe(true);
-      expect(cardAccepted.payload?.status).toBe("accepted");
-      expect(cardAccepted.payload?.deliveryRoute).toBe("approval-client");
+    const denied = await rpcReq<{ ok?: boolean }>(
+      observer,
+      "exec.approval.resolve",
+      { id: cardApprovalId, decision: "deny" },
+      30_000,
+    );
+    expect(denied.ok).toBe(true);
 
-      const cardEvent = await cardRequested;
-      const scope = cardEvent.payload?.request?.scope;
-      expect(scope?.kind).toBe("standing-grant");
-      const automation = scope?.automation ?? "";
-      const scopedCommand = scope?.command ?? "";
-      expect(hasUnpairedSurrogate(automation)).toBe(false);
-      expect(hasUnpairedSurrogate(scopedCommand)).toBe(false);
-      expect(automation).toBe("n".repeat(127));
-      expect(scopedCommand).toBe("a".repeat(255));
-      expect(automation).not.toContain(LOBSTER);
-      expect(scopedCommand).not.toContain(LOBSTER);
-      console.log(
-        `[gateway-ws exec.approval.requested standing-grant card utf16 proof] deliveryRoute=approval-client automation_len=${automation.length} command_len=${scopedCommand.length} unpaired=false boundaries=128,256`,
-      );
+    unregisterCronSource();
+    unregisterCronSource = registerCronRunExecSource(listRunId, {
+      agentId: "main",
+      jobId,
+      jobConfigRevision: revision,
+      jobName,
+    });
 
-      const denied = await rpcReq<{ ok?: boolean }>(
-        observer,
-        "exec.approval.resolve",
-        { id: cardApprovalId, decision: "deny" },
-        30_000,
-      );
-      expect(denied.ok).toBe(true);
+    const listRequested = onceMessage<{
+      type: string;
+      event?: string;
+      payload?: ApprovalRequestedPayload;
+    }>(
+      observer,
+      (message) =>
+        message.type === "event" &&
+        message.event === "exec.approval.requested" &&
+        message.payload?.id === listApprovalId,
+      30_000,
+    );
 
-      unregisterCronSource();
-      unregisterCronSource = registerCronRunExecSource(listRunId, {
+    const listAccepted = await rpcReq<{ id: string; status: string; deliveryRoute?: string }>(
+      requester,
+      "exec.approval.request",
+      {
+        id: listApprovalId,
+        command: listCommand,
+        cwd: listCwd,
+        host: "gateway",
         agentId: "main",
-        jobId,
-        jobConfigRevision: revision,
-        jobName,
-      });
+        runId: listRunId,
+        twoPhase: true,
+        timeoutMs: 120_000,
+      },
+      30_000,
+    );
+    expect(listAccepted.ok).toBe(true);
+    expect(listAccepted.payload?.status).toBe("accepted");
+    expect(listAccepted.payload?.deliveryRoute).toBe("approval-client");
+    await listRequested;
 
-      const listRequested = onceMessage<{
-        type: string;
-        event?: string;
-        payload?: ApprovalRequestedPayload;
-      }>(
-        observer,
-        (message) =>
-          message.type === "event" &&
-          message.event === "exec.approval.requested" &&
-          message.payload?.id === listApprovalId,
-        30_000,
-      );
+    const resolved = await rpcReq<{ ok?: boolean }>(
+      observer,
+      "exec.approval.resolve",
+      { id: listApprovalId, decision: "allow-always" },
+      30_000,
+    );
+    expect(resolved.ok).toBe(true);
+    expect(resolved.payload?.ok).toBe(true);
 
-      const listAccepted = await rpcReq<{ id: string; status: string; deliveryRoute?: string }>(
-        requester,
-        "exec.approval.request",
-        {
-          id: listApprovalId,
-          command: listCommand,
-          cwd: listCwd,
-          host: "gateway",
-          agentId: "main",
-          runId: listRunId,
-          twoPhase: true,
-          timeoutMs: 120_000,
-        },
-        30_000,
-      );
-      expect(listAccepted.ok).toBe(true);
-      expect(listAccepted.payload?.status).toBe("accepted");
-      expect(listAccepted.payload?.deliveryRoute).toBe("approval-client");
-      await listRequested;
-
-      const resolved = await rpcReq<{ ok?: boolean }>(
-        observer,
-        "exec.approval.resolve",
-        { id: listApprovalId, decision: "allow-always" },
-        30_000,
-      );
-      expect(resolved.ok).toBe(true);
-      expect(resolved.payload?.ok).toBe(true);
-
-      const listed = await rpcReq<GrantsListPayload>(
-        observer,
-        "exec.approval.grants.list",
-        {},
-        30_000,
-      );
-      expect(listed.ok).toBe(true);
-      const grant = listed.payload?.grants?.find((entry) => entry.cronJobId === jobId);
-      expect(grant).toBeDefined();
-      const listedCommand = grant?.command ?? "";
-      const listedCwd = grant?.cwd ?? "";
-      expect(hasUnpairedSurrogate(listedCommand)).toBe(false);
-      expect(hasUnpairedSurrogate(listedCwd)).toBe(false);
-      expect(listedCommand).toBe("c".repeat(511));
-      expect(listedCwd).toBe("b".repeat(511));
-      expect(listedCommand).not.toContain(LOBSTER);
-      expect(listedCwd).not.toContain(LOBSTER);
-      console.log(
-        `[gateway-ws exec.approval.grants.list utf16 proof] listen=loopback transport=ws store=real-sqlite command_len=${listedCommand.length} cwd_len=${listedCwd.length} unpaired=false boundary=512`,
-      );
-    },
-    180_000,
-  );
+    const listed = await rpcReq<GrantsListPayload>(
+      observer,
+      "exec.approval.grants.list",
+      {},
+      30_000,
+    );
+    expect(listed.ok).toBe(true);
+    const grant = listed.payload?.grants?.find((entry) => entry.cronJobId === jobId);
+    expect(grant).toBeDefined();
+    const listedCommand = grant?.command ?? "";
+    const listedCwd = grant?.cwd ?? "";
+    expect(hasUnpairedSurrogate(listedCommand)).toBe(false);
+    expect(hasUnpairedSurrogate(listedCwd)).toBe(false);
+    expect(listedCommand).toBe("c".repeat(511));
+    expect(listedCwd).toBe("b".repeat(511));
+    expect(listedCommand).not.toContain(LOBSTER);
+    expect(listedCwd).not.toContain(LOBSTER);
+    console.log(
+      `[gateway-ws exec.approval.grants.list utf16 proof] listen=loopback transport=ws store=real-sqlite command_len=${listedCommand.length} cwd_len=${listedCwd.length} unpaired=false boundary=512`,
+    );
+  }, 180_000);
 });

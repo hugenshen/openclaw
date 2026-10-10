@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { randomUUID } from "node:crypto";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 /**
  * Standalone shipped-Gateway proof for UTF-16-safe standing-grant previews.
  *
@@ -9,17 +11,12 @@
  * Not Vitest; does not import gateway test-helpers.mocks.
  */
 import { createServer, type ServerResponse } from "node:http";
-import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { GATEWAY_CLIENT_CAPS } from "../packages/gateway-protocol/src/client-info.js";
 import { connectGatewayClient, disconnectGatewayClient } from "../src/gateway/test-helpers.e2e.js";
 import { reserveTestPortListener } from "../src/test-utils/port-claims.js";
-import {
-  GATEWAY_CLIENT_MODES,
-  GATEWAY_CLIENT_NAMES,
-} from "../src/utils/message-channel.js";
+import { GATEWAY_CLIENT_MODES, GATEWAY_CLIENT_NAMES } from "../src/utils/message-channel.js";
 import { writeOpenAiResponsesText } from "../test/helpers/openai-responses-sse.ts";
 import { createOpenClawTestInstance } from "../test/helpers/openclaw-test-instance.ts";
 
@@ -340,7 +337,10 @@ async function main(): Promise<void> {
       twoPhase: true,
       timeoutMs: 120_000,
     });
-    assert(cardAccepted.status === "accepted", `card request not accepted: ${JSON.stringify(cardAccepted)}`);
+    assert(
+      cardAccepted.status === "accepted",
+      `card request not accepted: ${JSON.stringify(cardAccepted)}`,
+    );
     assert(
       cardAccepted.deliveryRoute === "approval-client",
       `expected approval-client delivery, got ${cardAccepted.deliveryRoute}`,
@@ -348,13 +348,22 @@ async function main(): Promise<void> {
 
     const cardEvent = await waitForCard(cardApprovalId);
     const scope = cardEvent.request?.scope;
-    assert(scope?.kind === "standing-grant", `expected standing-grant scope, got ${JSON.stringify(scope)}`);
+    assert(
+      scope?.kind === "standing-grant",
+      `expected standing-grant scope, got ${JSON.stringify(scope)}`,
+    );
     const automation = scope.automation ?? "";
     const scopedCommand = scope.command ?? "";
     assert(!hasUnpairedSurrogate(automation), "automation has unpaired surrogate");
     assert(!hasUnpairedSurrogate(scopedCommand), "scoped command has unpaired surrogate");
-    assert(automation === "n".repeat(127), `automation len/content mismatch: len=${automation.length}`);
-    assert(scopedCommand === "a".repeat(255), `command len/content mismatch: len=${scopedCommand.length}`);
+    assert(
+      automation === "n".repeat(127),
+      `automation len/content mismatch: len=${automation.length}`,
+    );
+    assert(
+      scopedCommand === "a".repeat(255),
+      `command len/content mismatch: len=${scopedCommand.length}`,
+    );
     assert(!automation.includes(LOBSTER), "automation still contains boundary emoji");
     assert(!scopedCommand.includes(LOBSTER), "command still contains boundary emoji");
     console.log(
@@ -380,7 +389,10 @@ async function main(): Promise<void> {
       twoPhase: true,
       timeoutMs: 120_000,
     });
-    assert(listAccepted.status === "accepted", `list request not accepted: ${JSON.stringify(listAccepted)}`);
+    assert(
+      listAccepted.status === "accepted",
+      `list request not accepted: ${JSON.stringify(listAccepted)}`,
+    );
     await waitForCard(listApprovalId);
 
     const resolved = await observer.request<{ ok?: boolean }>("exec.approval.resolve", {
@@ -396,7 +408,10 @@ async function main(): Promise<void> {
     const listedCwd = grant.cwd ?? "";
     assert(!hasUnpairedSurrogate(listedCommand), "listed command has unpaired surrogate");
     assert(!hasUnpairedSurrogate(listedCwd), "listed cwd has unpaired surrogate");
-    assert(listedCommand === "c".repeat(511), `listed command mismatch len=${listedCommand.length}`);
+    assert(
+      listedCommand === "c".repeat(511),
+      `listed command mismatch len=${listedCommand.length}`,
+    );
     assert(listedCwd === "b".repeat(511), `listed cwd mismatch len=${listedCwd.length}`);
     assert(!listedCommand.includes(LOBSTER), "listed command still contains boundary emoji");
     assert(!listedCwd.includes(LOBSTER), "listed cwd still contains boundary emoji");

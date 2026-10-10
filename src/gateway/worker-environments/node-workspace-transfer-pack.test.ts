@@ -8,6 +8,7 @@ import { requireGit } from "../../agents/worktrees/git.js";
 import { runNodeWorkerWorkspaceTransfer } from "../../node-host/node-worker-transfer-client.js";
 import * as workspaceCommands from "../../node-host/node-worker-workspace-commands.js";
 import { runCommandBuffered, runCommandWithTimeout } from "../../process/exec.js";
+import { workspaceTransfer } from "./node-worker-tunnel.test-support.js";
 import {
   createNodeWorkspaceTransferService,
   type NodeWorkspaceTransferService,
@@ -23,6 +24,26 @@ import { serializeWorkerWorkspaceManifest } from "./workspace-manifest.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 afterEach(() => vi.restoreAllMocks());
+
+/** Redacted transfer request/response trace for ClawSweeper real-behavior proof. */
+function logTransferProof(params: {
+  scenario: string;
+  request: Record<string, string | number | boolean>;
+  response: Record<string, string | number | boolean | undefined>;
+}): void {
+  const format = (entries: Record<string, string | number | boolean | undefined>) =>
+    Object.entries(entries)
+      .map(([key, value]) => `${key}=${value === undefined ? "<undefined>" : String(value)}`)
+      .join(" ");
+  // Keep tokens and host addresses out of durable proof text.
+  console.log(
+    [
+      `[workspace-transfer-proof] scenario=${params.scenario}`,
+      `  request: ${format(params.request)}`,
+      `  response: ${format(params.response)}`,
+    ].join("\n"),
+  );
+}
 
 /** Serves one prebuilt Git pack/manifest through the shipped Gateway transfer HTTP path. */
 function createPackBackedTransferService(params: {
@@ -51,8 +72,9 @@ function createPackBackedTransferService(params: {
       manifestRef: params.snapshot.manifestRef,
     },
   };
-  return {
-    authorize: ({ route, token }) => {
+  // Download-only facade: unused service methods stay stubbed via workspaceTransfer.
+  return workspaceTransfer({
+    authorize: (({ route, token }) => {
       if (
         token !== params.token ||
         route.environmentId !== params.environmentId ||
@@ -62,12 +84,12 @@ function createPackBackedTransferService(params: {
         return undefined;
       }
       return { ...authorization, route };
-    },
+    }) as NodeWorkspaceTransferService["authorize"],
     isAuthorizationCurrent: () => true,
     authorizationSignal: () => signal,
     snapshot: () => params.snapshot,
     pack: async () => params.packPath,
-  } as NodeWorkspaceTransferService;
+  });
 }
 
 async function createGitTransfer() {
@@ -146,7 +168,8 @@ describe("node workspace Git pack downloads", () => {
           },
         });
       for (let attempt = 0; attempt < 2; attempt++) {
-        expect(await transfer()).toBe(fixture.prepared.snapshot.manifestRef);
+        const resolved = await transfer();
+        expect(resolved).toBe(fixture.prepared.snapshot.manifestRef);
         expect(await fs.readFile(path.join(workspaceDir, "input.txt"), "utf8")).toBe(
           "captured base\n",
         );
@@ -155,6 +178,25 @@ describe("node workspace Git pack downloads", () => {
           expect(await requireGit(workspaceDir, ["config", "--local", "core.longpaths"])).toBe(
             "true",
           );
+        }
+        if (attempt === 0) {
+          logTransferProof({
+            scenario: "ordinary-completion",
+            request: {
+              direction: "download",
+              environmentId: "environment",
+              gateway: "local-ephemeral-gateway",
+              manifestRef: fixture.prepared.snapshot.manifestRef,
+              token: "redacted",
+              workspacePathBytes: workspaceDir.length,
+            },
+            response: {
+              outcome: "ok",
+              resolvedManifestRef: resolved,
+              checkedOut: "input.txt",
+              gitStatus: "clean",
+            },
+          });
         }
       }
     } finally {
@@ -335,8 +377,9 @@ describe("node workspace Git pack downloads", () => {
         return await original(params);
       });
     try {
-      await expect(
-        runNodeWorkerWorkspaceTransfer({
+      let transferError: unknown;
+      try {
+        await runNodeWorkerWorkspaceTransfer({
           gatewayUrl: fixture.gatewayUrl,
           environmentId: "environment",
           workspaceDir,
@@ -346,18 +389,51 @@ describe("node workspace Git pack downloads", () => {
             token: fixture.prepared.token,
             manifestRef: fixture.prepared.snapshot.manifestRef,
           },
-        }),
-      ).rejects.toMatchObject({
+        });
+      } catch (error) {
+        transferError = error;
+      }
+      expect(transferError).toMatchObject({
         message: "workspace-transfer-failed: transfer did not complete",
         cause: expect.objectContaining({
           message: expect.stringContaining("command output was truncated"),
         }),
       });
-      expect(await fs.readFile(path.join(workspaceDir, "previous.txt"), "utf8")).toBe(
-        "preserve prior workspace\n",
-      );
+      const prior = await fs.readFile(path.join(workspaceDir, "previous.txt"), "utf8");
+      expect(prior).toBe("preserve prior workspace\n");
       await expect(fs.access(path.join(workspaceDir, "input.txt"))).rejects.toMatchObject({
         code: "ENOENT",
+      });
+      const cause =
+        transferError && typeof transferError === "object" && "cause" in transferError
+          ? transferError.cause
+          : undefined;
+      const causeMessage =
+        cause instanceof Error
+          ? cause.message
+          : cause && typeof cause === "object" && "message" in cause
+            ? String(cause.message)
+            : String(cause);
+      logTransferProof({
+        scenario: "truncated-command-rejection",
+        request: {
+          direction: "download",
+          environmentId: "environment",
+          gateway: "local-ephemeral-gateway",
+          manifestRef: fixture.prepared.snapshot.manifestRef,
+          token: "redacted",
+          forcedRevParseMaxOutputBytes: 8,
+          priorWorkspaceFile: "previous.txt",
+        },
+        response: {
+          outcome: "rejected",
+          error: "workspace-transfer-failed: transfer did not complete",
+          cause: causeMessage.includes("command output was truncated")
+            ? "command output was truncated"
+            : causeMessage,
+          priorWorkspacePreserved: prior === "preserve prior workspace\n",
+          downloadedInputAbsent: true,
+        },
       });
     } finally {
       spy.mockRestore();
@@ -472,18 +548,37 @@ describe("node workspace Git pack downloads", () => {
       }),
     );
     try {
-      await expect(
-        runNodeWorkerWorkspaceTransfer({
-          gatewayUrl: server.gatewayUrl,
-          environmentId,
-          workspaceDir,
-          manifestHome: root,
-          transfer: { direction: "download", token, manifestRef },
-        }),
-      ).resolves.toBe(manifestRef);
+      const resolved = await runNodeWorkerWorkspaceTransfer({
+        gatewayUrl: server.gatewayUrl,
+        environmentId,
+        workspaceDir,
+        manifestHome: root,
+        transfer: { direction: "download", token, manifestRef },
+      });
+      expect(resolved).toBe(manifestRef);
       await expect(fs.readFile(path.join(workspaceDir, "tracked.txt"))).resolves.toEqual(content);
       await expect(fs.access(path.join(workspaceDir, "e"))).rejects.toMatchObject({
         code: "ENOENT",
+      });
+      logTransferProof({
+        scenario: "index-over-64mib",
+        request: {
+          direction: "download",
+          environmentId,
+          gateway: "local-ephemeral-gateway",
+          manifestRef,
+          token: "redacted",
+          indexListingBytes: listing.stdout.byteLength,
+          formerBufferCapBytes: MAX_WORKSPACE_MANIFEST_BYTES,
+          packBytes: packed.stdout.byteLength,
+        },
+        response: {
+          outcome: "ok",
+          resolvedManifestRef: resolved,
+          checkedOut: "tracked.txt",
+          paddingTreeAbsent: true,
+          indexExceededFormerCap: listing.stdout.byteLength > MAX_WORKSPACE_MANIFEST_BYTES,
+        },
       });
     } finally {
       await server.close();

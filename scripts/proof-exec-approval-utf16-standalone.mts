@@ -16,6 +16,10 @@ import path from "node:path";
 import { GATEWAY_CLIENT_CAPS } from "../packages/gateway-protocol/src/client-info.js";
 import { connectGatewayClient, disconnectGatewayClient } from "../src/gateway/test-helpers.e2e.js";
 import { reserveTestPortListener } from "../src/test-utils/port-claims.js";
+import {
+  GATEWAY_CLIENT_MODES,
+  GATEWAY_CLIENT_NAMES,
+} from "../src/utils/message-channel.js";
 import { writeOpenAiResponsesText } from "../test/helpers/openai-responses-sse.ts";
 import { createOpenClawTestInstance } from "../test/helpers/openclaw-test-instance.ts";
 
@@ -189,8 +193,26 @@ async function main(): Promise<void> {
 
   const pendingCards = new Map<string, ApprovalRequestedPayload>();
   const cardWaiters = new Map<string, (payload: ApprovalRequestedPayload) => void>();
+  // Isolated cron agent turns mint their own UUID runId (not cron.run's manual:* id).
+  // Capture it from agent lifecycle events while the held model request keeps the source live.
+  const seenAgentRunIds = new Set<string>();
+  let agentRunId: string | undefined;
+  let agentRunIdWaiter: ((runId: string) => void) | undefined;
 
   const onEvent = (evt: { event?: string; payload?: unknown }) => {
+    if (evt.event === "agent") {
+      const payload = evt.payload as { runId?: unknown; stream?: unknown };
+      if (typeof payload.runId === "string" && payload.runId.trim()) {
+        const runId = payload.runId.trim();
+        seenAgentRunIds.add(runId);
+        if (!agentRunId) {
+          agentRunId = runId;
+          agentRunIdWaiter?.(runId);
+          agentRunIdWaiter = undefined;
+        }
+      }
+      return;
+    }
     if (evt.event !== "exec.approval.requested") {
       return;
     }
@@ -205,6 +227,26 @@ async function main(): Promise<void> {
       cardWaiters.delete(id);
       waiter(payload);
     }
+  };
+
+  const waitForAgentRunId = (timeoutMs = 60_000): Promise<string> => {
+    if (agentRunId) {
+      return Promise.resolve(agentRunId);
+    }
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        agentRunIdWaiter = undefined;
+        reject(
+          new Error(
+            `timeout waiting for agent runId; seen=${JSON.stringify([...seenAgentRunIds])}`,
+          ),
+        );
+      }, timeoutMs);
+      agentRunIdWaiter = (runId) => {
+        clearTimeout(timer);
+        resolve(runId);
+      };
+    });
   };
 
   const waitForCard = (id: string, timeoutMs = 30_000): Promise<ApprovalRequestedPayload> => {
@@ -237,8 +279,10 @@ async function main(): Promise<void> {
     observer = await connectGatewayClient({
       url: instance.url,
       token: instance.gatewayToken,
+      clientName: GATEWAY_CLIENT_NAMES.TEST,
+      mode: GATEWAY_CLIENT_MODES.BACKEND,
       clientDisplayName: "utf16-approval-observer",
-      scopes: ["operator.admin"],
+      scopes: ["operator.admin", "operator.read", "operator.write"],
       caps: [GATEWAY_CLIENT_CAPS.APPROVALS],
       onEvent,
       timeoutMs: 60_000,
@@ -246,8 +290,11 @@ async function main(): Promise<void> {
     admin = await connectGatewayClient({
       url: instance.url,
       token: instance.gatewayToken,
+      clientName: GATEWAY_CLIENT_NAMES.TEST,
+      mode: GATEWAY_CLIENT_MODES.BACKEND,
       clientDisplayName: "utf16-admin",
-      scopes: ["operator.admin"],
+      scopes: ["operator.admin", "operator.read", "operator.write"],
+      onEvent,
       timeoutMs: 60_000,
     });
 
@@ -266,18 +313,19 @@ async function main(): Promise<void> {
       },
     });
     assert(job.id, "cron.add returned no id");
+    // Receive agent lifecycle frames for the isolated cron session.
+    await admin.request("sessions.subscribe", { agentId: "main" });
 
     const run = await admin.request<{ runId?: string; ok?: boolean }>("cron.run", {
       id: job.id,
       mode: "force",
     });
-    const runId = run.runId;
-    assert(runId, `cron.run returned no runId: ${JSON.stringify(run)}`);
-    console.log(`[utf16-standalone] cron.run jobId=${job.id} runId=${runId}`);
+    assert(run.runId, `cron.run returned no runId: ${JSON.stringify(run)}`);
+    console.log(`[utf16-standalone] cron.run jobId=${job.id} manualRunId=${run.runId}`);
 
     await waitFor("held cron model request", () => modelRequests >= 1 && Boolean(heldResponse));
-    // Give registerCronRunExecSource a beat after the agent entry starts.
-    await new Promise((resolve) => setTimeout(resolve, 250));
+    const runId = await waitForAgentRunId();
+    console.log(`[utf16-standalone] agent runId=${runId} (cron exec-source key)`);
 
     const cardAccepted = await admin.request<{
       id: string;

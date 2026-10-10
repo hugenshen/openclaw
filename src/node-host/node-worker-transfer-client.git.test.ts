@@ -377,87 +377,6 @@ describe("node worker Git transfers", () => {
       }
     },
   );
-});
-
-describe("node worker transfer client hash memo", () => {
-  it("reuses the placement hash memo across download and upload captures", async () => {
-    transferDebug.mockClear();
-    const root = tempDirs.make("node-worker-transfer-memo-");
-    const workspaceDir = path.join(root, "workspace");
-    const body = Buffer.from("memoized content\n");
-    const sha256 = createHash("sha256").update(body).digest("hex");
-    const rawManifest = serializeWorkerWorkspaceManifest({
-      version: 1,
-      baseCommit: null,
-      entries: [{ path: "artifact.txt", type: "file", mode: 0o644, size: body.byteLength, sha256 }],
-    });
-    const manifestRef = `sha256:${createHash("sha256").update(rawManifest).digest("hex")}`;
-    const server = createHttpServer((req, res) => {
-      void (async () => {
-        if (req.url?.endsWith("/manifest")) {
-          res.writeHead(200).end(rawManifest);
-          return;
-        }
-        if (req.url?.endsWith(`/blobs/${sha256}`)) {
-          res.writeHead(200).end(body);
-          return;
-        }
-        if (req.method === "POST" && req.url?.includes("/reconciliations/")) {
-          for await (const chunk of req) {
-            void chunk;
-          }
-          res.writeHead(200).end(JSON.stringify({ manifestRef }));
-          return;
-        }
-        res.writeHead(404).end();
-      })().catch((error: unknown) => {
-        res.destroy(error instanceof Error ? error : new Error(String(error)));
-      });
-    });
-    const gatewayUrl = await listen(server);
-    const hashMemo = new Map<string, string>();
-    try {
-      await expect(
-        runNodeWorkerWorkspaceTransfer({
-          gatewayUrl,
-          environmentId: "environment-memo",
-          workspaceDir,
-          manifestHome: root,
-          transfer: { direction: "download", token: "download-token", manifestRef },
-          hashMemo,
-        }),
-      ).resolves.toBe(manifestRef);
-      await expect(
-        runNodeWorkerWorkspaceTransfer({
-          gatewayUrl,
-          environmentId: "environment-memo",
-          workspaceDir,
-          manifestHome: root,
-          transfer: {
-            direction: "upload",
-            token: "upload-token",
-            baseManifestRef: manifestRef,
-            referenceManifestRef: manifestRef,
-          },
-          hashMemo,
-        }),
-      ).resolves.toBe(manifestRef);
-      const captures = transferDebug.mock.calls
-        .filter(([message]) => message === "node worker manifest capture completed")
-        .map(([, data]) => data as { contentHashCount: number; memoHitCount: number });
-      expect(captures).toHaveLength(2);
-      // Download verifies fresh staging files by hashing; the unchanged upload
-      // capture must reuse the memo seeded through the workspace rename.
-      expect(captures[0]!.contentHashCount).toBe(1);
-      expect(captures[1]!.contentHashCount).toBe(0);
-      expect(captures[1]!.memoHitCount).toBe(1);
-    } finally {
-      server.closeAllConnections();
-      await new Promise<void>((resolve) => {
-        server.close(() => resolve());
-      });
-    }
-  });
 
   it("preserves the prior workspace when workspace Git stdout is truncated during download", async () => {
     const root = tempDirs.make("node-worker-transfer-git-trunc-");
@@ -520,7 +439,12 @@ describe("node worker transfer client hash memo", () => {
           manifestHome: root,
           transfer: { direction: "download", token: "download-token", manifestRef },
         }),
-      ).rejects.toThrow("command output was truncated");
+      ).rejects.toMatchObject({
+        message: "workspace-transfer-failed: transfer did not complete",
+        cause: expect.objectContaining({
+          message: expect.stringContaining("command output was truncated"),
+        }),
+      });
       expect(await fs.readFile(path.join(workspaceDir, "previous.txt"), "utf8")).toBe(
         "preserve prior workspace\n",
       );
@@ -607,6 +531,87 @@ describe("node worker transfer client hash memo", () => {
       await expect(fs.access(path.join(workspaceDir, "extras"))).rejects.toMatchObject({
         code: "ENOENT",
       });
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => {
+        server.close(() => resolve());
+      });
+    }
+  });
+});
+
+describe("node worker transfer client hash memo", () => {
+  it("reuses the placement hash memo across download and upload captures", async () => {
+    transferDebug.mockClear();
+    const root = tempDirs.make("node-worker-transfer-memo-");
+    const workspaceDir = path.join(root, "workspace");
+    const body = Buffer.from("memoized content\n");
+    const sha256 = createHash("sha256").update(body).digest("hex");
+    const rawManifest = serializeWorkerWorkspaceManifest({
+      version: 1,
+      baseCommit: null,
+      entries: [{ path: "artifact.txt", type: "file", mode: 0o644, size: body.byteLength, sha256 }],
+    });
+    const manifestRef = `sha256:${createHash("sha256").update(rawManifest).digest("hex")}`;
+    const server = createHttpServer((req, res) => {
+      void (async () => {
+        if (req.url?.endsWith("/manifest")) {
+          res.writeHead(200).end(rawManifest);
+          return;
+        }
+        if (req.url?.endsWith(`/blobs/${sha256}`)) {
+          res.writeHead(200).end(body);
+          return;
+        }
+        if (req.method === "POST" && req.url?.includes("/reconciliations/")) {
+          for await (const chunk of req) {
+            void chunk;
+          }
+          res.writeHead(200).end(JSON.stringify({ manifestRef }));
+          return;
+        }
+        res.writeHead(404).end();
+      })().catch((error: unknown) => {
+        res.destroy(error instanceof Error ? error : new Error(String(error)));
+      });
+    });
+    const gatewayUrl = await listen(server);
+    const hashMemo = new Map<string, string>();
+    try {
+      await expect(
+        runNodeWorkerWorkspaceTransfer({
+          gatewayUrl,
+          environmentId: "environment-memo",
+          workspaceDir,
+          manifestHome: root,
+          transfer: { direction: "download", token: "download-token", manifestRef },
+          hashMemo,
+        }),
+      ).resolves.toBe(manifestRef);
+      await expect(
+        runNodeWorkerWorkspaceTransfer({
+          gatewayUrl,
+          environmentId: "environment-memo",
+          workspaceDir,
+          manifestHome: root,
+          transfer: {
+            direction: "upload",
+            token: "upload-token",
+            baseManifestRef: manifestRef,
+            referenceManifestRef: manifestRef,
+          },
+          hashMemo,
+        }),
+      ).resolves.toBe(manifestRef);
+      const captures = transferDebug.mock.calls
+        .filter(([message]) => message === "node worker manifest capture completed")
+        .map(([, data]) => data as { contentHashCount: number; memoHitCount: number });
+      expect(captures).toHaveLength(2);
+      // Download verifies fresh staging files by hashing; the unchanged upload
+      // capture must reuse the memo seeded through the workspace rename.
+      expect(captures[0]!.contentHashCount).toBe(1);
+      expect(captures[1]!.contentHashCount).toBe(0);
+      expect(captures[1]!.memoHitCount).toBe(1);
     } finally {
       server.closeAllConnections();
       await new Promise<void>((resolve) => {

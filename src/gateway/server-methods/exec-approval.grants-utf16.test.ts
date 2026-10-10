@@ -27,11 +27,7 @@ import {
 } from "../operator-approval-store.js";
 import * as approvalStore from "../operator-approval-store.js";
 import { createClient, createApprovalInvocation, createContext } from "./approval.test-support.js";
-import {
-  createExecApprovalFixture,
-  getRequestedExecApprovalPayload,
-  requestExecApproval,
-} from "./exec-approval.test-support.js";
+import { createExecApprovalFixture, requestExecApproval } from "./exec-approval.test-support.js";
 import { createExecApprovalHandlers } from "./exec-approval.js";
 
 const CRON_STORE_KEY = "/tmp/openclaw-utf16-grant-test-store";
@@ -106,6 +102,7 @@ describe("exec approval UTF-16 display bounds", () => {
     const jobName = `${"n".repeat(127)}${lobster}`;
     const command = `${"a".repeat(255)}${lobster}`;
     const runId = "run-utf16-card";
+    const approvalId = "approval-utf16-card";
     test.onTestFinished(
       registerCronRunExecSource(runId, {
         agentId: "main",
@@ -117,19 +114,20 @@ describe("exec approval UTF-16 display bounds", () => {
 
     const fixture = await createExecApprovalFixture(test, { preparePersistence: false });
     await fixture.run(async () => {
-      const { handlers, respond, context, broadcasts } = fixture;
-      await requestExecApproval({
+      const { handlers, respond, context, manager } = fixture;
+      const pending = requestExecApproval({
         handlers,
         respond,
         context,
         params: {
-          id: "approval-utf16-card",
+          id: approvalId,
           command,
           host: "gateway",
           agentId: "main",
           runId,
           twoPhase: true,
           requireDeliveryRoute: false,
+          suppressDelivery: true,
           timeoutMs: 60_000,
           systemRunPlan: undefined,
           commandArgv: undefined,
@@ -137,25 +135,35 @@ describe("exec approval UTF-16 display bounds", () => {
         },
         client: createClient({ scopes: ["operator.approvals"], internal: true }),
       });
-      expect(respond.mock.calls[0]?.[0]).toBe(true);
-      const requested = getRequestedExecApprovalPayload(broadcasts);
-      const scope = requested.request.scope as {
-        kind?: string;
-        automation?: string;
-        command?: string;
-      };
-      expect(scope.kind).toBe("standing-grant");
-      const automation = scope.automation ?? "";
-      const scopedCommand = scope.command ?? "";
-      expect(hasUnpairedSurrogate(automation)).toBe(false);
-      expect(hasUnpairedSurrogate(scopedCommand)).toBe(false);
-      expect(automation).toBe("n".repeat(127));
-      expect(scopedCommand).toBe("a".repeat(255));
-      expect(automation).not.toContain(lobster);
-      expect(scopedCommand).not.toContain(lobster);
-      console.log(
-        `[exec.approval.request standing-grant card utf16 proof] automation_len=${automation.length} command_len=${scopedCommand.length} unpaired=false boundaries=128,256`,
-      );
+      try {
+        await vi.waitFor(() => {
+          expect(manager.listLocalPendingRecords().some((record) => record.id === approvalId)).toBe(
+            true,
+          );
+        });
+        const record = manager.listLocalPendingRecords().find((entry) => entry.id === approvalId);
+        expect(record).toBeDefined();
+        const scope = record?.request.scope as {
+          kind?: string;
+          automation?: string;
+          command?: string;
+        };
+        expect(scope.kind).toBe("standing-grant");
+        const automation = scope.automation ?? "";
+        const scopedCommand = scope.command ?? "";
+        expect(hasUnpairedSurrogate(automation)).toBe(false);
+        expect(hasUnpairedSurrogate(scopedCommand)).toBe(false);
+        expect(automation).toBe("n".repeat(127));
+        expect(scopedCommand).toBe("a".repeat(255));
+        expect(automation).not.toContain(lobster);
+        expect(scopedCommand).not.toContain(lobster);
+        console.log(
+          `[exec.approval.request standing-grant card utf16 proof] automation_len=${automation.length} command_len=${scopedCommand.length} unpaired=false boundaries=128,256`,
+        );
+      } finally {
+        await manager.resolve(approvalId, "deny");
+        await pending;
+      }
     });
   });
 

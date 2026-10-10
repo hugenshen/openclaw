@@ -1,4 +1,5 @@
 // Shell completion runtime: cache paths, profile installation, and shell detection.
+import { isUtf8 } from "node:buffer";
 import { existsSync } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -20,6 +21,13 @@ export const COMPLETION_SKIP_PLUGIN_COMMANDS_ENV = "OPENCLAW_COMPLETION_SKIP_PLU
 
 type CompletionProfileEncoding = "utf8" | "utf8bom" | "utf16le" | "utf16be";
 
+function decodeUtf8CompletionProfile(buffer: Buffer, profilePath: string): string {
+  if (!isUtf8(buffer)) {
+    throw new Error(`Shell profile must be valid UTF-8: ${profilePath}`);
+  }
+  return buffer.toString("utf8");
+}
+
 async function readCompletionProfile(profilePath: string, shell: CompletionShell) {
   const buffer = await fs.readFile(profilePath);
   let encoding: CompletionProfileEncoding = "utf8";
@@ -34,7 +42,9 @@ async function readCompletionProfile(profilePath: string, shell: CompletionShell
   // Removing an owned first line must not remove the profile's encoding declaration.
   return {
     content:
-      encoding === "utf8" ? buffer.toString("utf8") : decodeWindowsTextFileBuffer({ buffer }),
+      encoding === "utf8"
+        ? decodeUtf8CompletionProfile(buffer, profilePath)
+        : decodeWindowsTextFileBuffer({ buffer }),
     encoding,
   };
 }

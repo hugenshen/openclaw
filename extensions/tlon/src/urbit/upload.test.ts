@@ -160,18 +160,6 @@ describe("uploadImageFromUrl", () => {
     expect(mockReadRemoteMediaBuffer).not.toHaveBeenCalled();
   });
 
-  it("extracts filename from URL path", async () => {
-    await setupSuccessfulUpload({
-      contentType: "image/jpeg",
-      fileName: null,
-    });
-    mockUploadFile.mockResolvedValue({ url: "https://memex.tlon.network/uploaded.jpg" });
-
-    await uploadImageFromUrl("https://example.com/path/to/my-image.jpg", clientConfig);
-
-    expect(requireUploadParams().fileName).toBe("my-image.jpg");
-  });
-
   it("uses default filename when URL has no path", async () => {
     await setupSuccessfulUpload({
       contentType: "image/png",

@@ -394,13 +394,15 @@ export class BoardWidgetSandboxHost {
         `widget content request failed (${response.status})`,
       );
     }
+    const tooLargeMessage =
+      "widget HTML exceeds 10 MiB; regenerate a smaller widget";
     try {
       return await readResponseTextWithLimit(response, {
         maxBytes: WIDGET_HTML_MAX_UTF8_BYTES,
-        tooLargeMessage: "widget content exceeded size limit",
+        tooLargeMessage,
       });
     } catch (error) {
-      if (error instanceof Error && error.message === "widget content exceeded size limit") {
+      if (error instanceof Error && error.message === tooLargeMessage) {
         throw new WidgetDocumentError("rejected", error.message);
       }
       throw error;

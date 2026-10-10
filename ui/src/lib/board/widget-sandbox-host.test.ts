@@ -1002,7 +1002,7 @@ describe("BoardWidgetSandboxHost", () => {
       expect(onLoadFailed).not.toHaveBeenCalled();
       expect(onError.mock.calls[0]?.[0]).toMatchObject({
         kind: "rejected",
-        message: "widget content exceeded size limit",
+        message: "widget HTML exceeds 10 MiB; regenerate a smaller widget",
       });
       expect(requestCount).toBe(1);
       await vi.waitFor(() => expect(socketClosed).toBe(true), { timeout: 2_000 });

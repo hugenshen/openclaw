@@ -31,6 +31,11 @@ vi.mock("../tlon-api.js", () => ({
 }));
 
 const mockUploadFile = vi.mocked(uploadFile);
+const clientConfig = {
+  shipUrl: "https://zod.tlon.network",
+  shipName: "zod",
+  getCode: async () => "fixture-code",
+};
 
 const PNG_1X1 = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=",
@@ -68,31 +73,34 @@ describe("uploadImageFromUrl Content-Disposition HTTP", () => {
     vi.clearAllMocks();
   });
 
-  it("stores the Content-Disposition filename from a real HTTP download", async () => {
-    mockUploadFile.mockResolvedValue({ url: "https://memex.tlon.network/uploaded.png" });
-    await withImageServer(
-      (_request, response) => {
-        response.writeHead(200, {
-          "content-type": "image/png",
-          "content-disposition": 'attachment; filename="photo.png"',
-        });
-        response.end(PNG_1X1);
-      },
-      async (origin) => {
-        const imageUrl = `${origin}/download?id=123`;
-        const result = await uploadImageFromUrl(imageUrl);
-        const [call] = mockUploadFile.mock.calls;
-        if (!call) {
-          throw new Error("expected Tlon uploadFile call");
-        }
-        const [uploadParams] = call;
-        expect(result).toBe("https://memex.tlon.network/uploaded.png");
-        expect(uploadParams?.fileName).toBe("photo.png");
-        expect(actualReadRemoteMediaBuffer.current).not.toBeNull();
-        console.log(
-          `[tlon content-disposition proof] stored_filename=${uploadParams?.fileName} source=${imageUrl}`,
-        );
-      },
-    );
-  });
+  it.each(["photo.png", "photo#1.png", "photo?v=1.png"] as const)(
+    "stores Content-Disposition filename %s from a real HTTP download",
+    async (fileName) => {
+      mockUploadFile.mockResolvedValue({ url: "https://memex.tlon.network/uploaded.png" });
+      await withImageServer(
+        (_request, response) => {
+          response.writeHead(200, {
+            "content-type": "image/png",
+            "content-disposition": `attachment; filename="${fileName}"`,
+          });
+          response.end(PNG_1X1);
+        },
+        async (origin) => {
+          const imageUrl = `${origin}/download?id=123`;
+          const result = await uploadImageFromUrl(imageUrl, clientConfig);
+          const [call] = mockUploadFile.mock.calls;
+          if (!call) {
+            throw new Error("expected Tlon uploadFile call");
+          }
+          const [uploadParams] = call;
+          expect(result).toBe("https://memex.tlon.network/uploaded.png");
+          expect(uploadParams?.fileName).toBe(fileName);
+          expect(actualReadRemoteMediaBuffer.current).not.toBeNull();
+          console.log(
+            `[tlon content-disposition proof] stored_filename=${uploadParams?.fileName} source=${imageUrl}`,
+          );
+        },
+      );
+    },
+  );
 });

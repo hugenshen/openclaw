@@ -1,20 +1,18 @@
-// Lmstudio plugin module implements models.fetch behavior.
-import { createSubsystemLogger, redactToolPayloadText } from "openclaw/plugin-sdk/logging-core";
+import { createSubsystemLogger } from "openclaw/plugin-sdk/logging-core";
 import { resolveTimerTimeoutMs } from "openclaw/plugin-sdk/number-runtime";
 import { LiveModelCatalogHttpError } from "openclaw/plugin-sdk/provider-catalog-live-runtime";
 import {
   readProviderJsonArrayFieldResponse,
   readProviderJsonResponse,
+  redactProviderResponseErrorText,
 } from "openclaw/plugin-sdk/provider-http";
 import type { ModelDefinitionConfig } from "openclaw/plugin-sdk/provider-model-shared";
-import { SELF_HOSTED_DEFAULT_COST } from "openclaw/plugin-sdk/provider-setup";
 import { readResponseTextPrefix } from "openclaw/plugin-sdk/response-limit-runtime";
 import { fetchWithSsrFGuard, type SsrFPolicy } from "openclaw/plugin-sdk/ssrf-runtime";
-import { asPositiveSafeInteger } from "openclaw/plugin-sdk/string-coerce-runtime";
+import { asPositiveSafeInteger, isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { LMSTUDIO_DEFAULT_LOAD_CONTEXT_LENGTH } from "./defaults.js";
 import {
-  buildLmstudioModelName,
-  mapLmstudioWireEntry,
+  mapLmstudioWireModels,
   resolveLmstudioCanonicalModelKey,
   resolveLmstudioServerBase,
   resolveLoadedContextWindow,
@@ -26,20 +24,13 @@ const log = createSubsystemLogger("extensions/lmstudio/models");
 const LMSTUDIO_ERROR_BODY_LIMIT_BYTES = 8 * 1024;
 
 function redactLmstudioLoadError(value: string, headers: Record<string, string> | undefined) {
-  const credentials = Object.entries(headers ?? {})
-    .filter(([name]) => name.toLowerCase() !== "content-type")
-    .flatMap(([name, header]) => {
-      const normalized = header.trim();
-      if (!normalized) {
-        return [];
-      }
-      return name.toLowerCase() === "authorization"
-        ? [normalized, normalized.replace(/^\S+\s+/u, "")]
-        : [normalized];
-    })
-    .toSorted((left, right) => right.length - left.length);
-  return redactToolPayloadText(
-    credentials.reduce((redacted, credential) => redacted.replaceAll(credential, "***"), value),
+  return redactProviderResponseErrorText(
+    value,
+    Object.fromEntries(
+      Object.entries(headers ?? {})
+        .filter(([name]) => name.toLowerCase() !== "content-type")
+        .map(([name, header]) => [name, header.trim()]),
+    ),
   );
 }
 
@@ -65,7 +56,6 @@ type DiscoverLmstudioModelsParams = {
   headers?: Record<string, string>;
   quiet: boolean;
   discoveryMode?: "strict";
-  /** Injectable fetch implementation; defaults to the global fetch. */
   fetchImpl?: typeof fetch;
 };
 
@@ -76,7 +66,9 @@ async function fetchLmstudioEndpoint(params: {
   fetchImpl?: typeof fetch;
   ssrfPolicy?: SsrFPolicy;
   auditContext: string;
+  signal?: AbortSignal;
 }): Promise<{ response: Response; release: () => Promise<void> }> {
+  params.signal?.throwIfAborted();
   const timeoutMs = resolveTimerTimeoutMs(params.timeoutMs, 1);
   let response: Response;
   let release: () => Promise<void>;
@@ -85,6 +77,7 @@ async function fetchLmstudioEndpoint(params: {
       url: params.url,
       init: params.init,
       timeoutMs,
+      signal: params.signal,
       fetchImpl: params.fetchImpl,
       policy: params.ssrfPolicy,
       auditContext: params.auditContext,
@@ -95,7 +88,9 @@ async function fetchLmstudioEndpoint(params: {
     const fetchFn = params.fetchImpl ?? fetch;
     response = await fetchFn(params.url, {
       ...params.init,
-      signal: AbortSignal.timeout(timeoutMs),
+      signal: params.signal
+        ? AbortSignal.any([params.signal, AbortSignal.timeout(timeoutMs)])
+        : AbortSignal.timeout(timeoutMs),
     });
     release = async () => undefined;
   }
@@ -131,7 +126,7 @@ export async function fetchLmstudioModels(params: {
   headers?: Record<string, string>;
   ssrfPolicy?: SsrFPolicy;
   timeoutMs?: number;
-  /** Injectable fetch implementation; defaults to the global fetch. */
+  signal?: AbortSignal;
   fetchImpl?: typeof fetch;
 }): Promise<FetchLmstudioModelsResult> {
   const baseUrl = resolveLmstudioServerBase(params.baseUrl);
@@ -146,6 +141,7 @@ export async function fetchLmstudioModels(params: {
         }),
       },
       timeoutMs,
+      signal: params.signal,
       fetchImpl: params.fetchImpl,
       ssrfPolicy: params.ssrfPolicy,
       auditContext: "lmstudio-model-discovery",
@@ -163,10 +159,7 @@ export async function fetchLmstudioModels(params: {
         "LM Studio model list",
         "models",
       );
-      const validModels = models.filter(
-        (model): model is LmstudioModelWire =>
-          typeof model === "object" && model !== null && !Array.isArray(model),
-      );
+      const validModels = models.filter(isRecord);
       if (models.length > 0 && validModels.length === 0) {
         throw new Error("LM Studio model list: malformed JSON response");
       }
@@ -187,7 +180,6 @@ export async function fetchLmstudioModels(params: {
   }
 }
 
-/** Discovers LLM models from LM Studio and maps them to OpenClaw model definitions. */
 export async function discoverLmstudioModels(
   params: DiscoverLmstudioModelsParams,
 ): Promise<ModelDefinitionConfig[]> {
@@ -212,26 +204,7 @@ export async function discoverLmstudioModels(
     return [];
   }
 
-  return fetched.models
-    .map((entry): ModelDefinitionConfig | null => {
-      const base = mapLmstudioWireEntry(entry);
-      if (!base) {
-        return null;
-      }
-      return {
-        id: base.id,
-        // Runtime display: include format/vision/tool-use/loaded tags in the name.
-        name: buildLmstudioModelName(base),
-        reasoning: base.reasoning,
-        input: base.input,
-        cost: SELF_HOSTED_DEFAULT_COST,
-        compat: { ...base.compat, supportsUsageInStreaming: true },
-        contextWindow: base.contextWindow,
-        contextTokens: base.contextTokens,
-        maxTokens: base.maxTokens,
-      };
-    })
-    .filter((entry): entry is ModelDefinitionConfig => entry !== null);
+  return mapLmstudioWireModels(fetched.models, "runtime");
 }
 
 type LmstudioModelLoadParams = {
@@ -242,7 +215,7 @@ type LmstudioModelLoadParams = {
   modelKey: string;
   requestedContextLength?: number;
   timeoutMs?: number;
-  /** Injectable fetch implementation; defaults to the global fetch. */
+  signal?: AbortSignal;
   fetchImpl?: typeof fetch;
 };
 
@@ -272,8 +245,10 @@ export async function prepareLmstudioModelForInference(
     headers: params.headers,
     ssrfPolicy: params.ssrfPolicy,
     timeoutMs,
+    signal: params.signal,
     fetchImpl: params.fetchImpl,
   });
+  params.signal?.throwIfAborted();
   if (!preflight.reachable) {
     throw new Error(`LM Studio model discovery failed: ${String(preflight.error)}`);
   }
@@ -326,6 +301,7 @@ export async function prepareLmstudioModelForInference(
         }),
       },
       timeoutMs,
+      signal: params.signal,
       fetchImpl: params.fetchImpl,
       ssrfPolicy: params.ssrfPolicy,
       auditContext: "lmstudio-model-load",

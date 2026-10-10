@@ -1,3 +1,4 @@
+import { isUtf8 } from "node:buffer";
 import { createHash } from "node:crypto";
 /** Doctor repairs for legacy auth profile JSON stores and OpenAI provider-id migrations. */
 import fs from "node:fs";
@@ -595,6 +596,13 @@ function hasImportableAuthProfileStore(store: AuthProfileStore | null): store is
   return Boolean(store && (Object.keys(store.profiles).length > 0 || hasAuthProfileState(store)));
 }
 
+function decodeAuthProfileSourceBytes(bytes: Buffer, sourcePath: string): string {
+  if (!isUtf8(bytes)) {
+    throw new Error(`legacy auth source must be valid UTF-8: ${sourcePath}`);
+  }
+  return bytes.toString("utf8");
+}
+
 function prepareAuthProfileSourceReceipt(params: {
   pathname: string;
   targetDatabasePath: string;
@@ -604,9 +612,10 @@ function prepareAuthProfileSourceReceipt(params: {
   env?: NodeJS.ProcessEnv;
 }): AuthProfileMigrationSourceReceipt {
   const sourceBytes = fs.readFileSync(params.pathname);
+  const sourceText = decodeAuthProfileSourceBytes(sourceBytes, params.pathname);
   let sourceRecordCount = 0;
   try {
-    const parsed = JSON.parse(sourceBytes.toString("utf8")) as unknown;
+    const parsed = JSON.parse(sourceText) as unknown;
     sourceRecordCount = isRecord(parsed) ? Object.keys(parsed).length : 0;
   } catch {
     // The migration parser reports malformed input separately; receipts never include its bytes.
@@ -649,8 +658,9 @@ function parseAuthProfileMigrationSource(
   if (!receipt?.sourceBytes) {
     return null;
   }
+  const sourceText = decodeAuthProfileSourceBytes(receipt.sourceBytes, receipt.sourcePath);
   try {
-    return JSON.parse(receipt.sourceBytes.toString("utf8")) as unknown;
+    return JSON.parse(sourceText) as unknown;
   } catch {
     return null;
   }
@@ -1813,6 +1823,9 @@ function recoverArchivedOpenAICodexAuthProfileIdMap(params: {
             path.resolve(resolveMigrationTargetDatabasePath(candidate.agentDir, params.env)) ||
           !isRecord(report.expectedProfileSha256)
         ) {
+          continue;
+        }
+        if (!isUtf8(sourceBytes)) {
           continue;
         }
         const archivedStore = JSON.parse(sourceBytes.toString("utf8")) as unknown;

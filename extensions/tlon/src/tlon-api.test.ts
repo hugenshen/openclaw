@@ -520,11 +520,14 @@ describe("uploadFile custom S3 upload hardening", () => {
       mockGetSignedUrl.mockResolvedValueOnce(S3_UPLOAD_URL);
       mockGuardedResponse(S3_UPLOAD_URL);
 
-      const result = await uploadFile({
-        blob: new Blob(["image-bytes"], { type: "image/png" }),
-        fileName,
-        contentType: "image/png",
-      });
+      const result = await uploadFile(
+        {
+          blob: new Blob(["image-bytes"], { type: "image/png" }),
+          fileName,
+          contentType: "image/png",
+        },
+        testClientConfig,
+      );
 
       const parsed = new URL(result.url);
       expect(parsed.origin).toBe("https://files.example.com");

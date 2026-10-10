@@ -61,6 +61,7 @@ describe("uploadImageFromUrl", () => {
       const { buffer } = await setupSuccessfulUpload({
         uploadedUrl: "https://memex.tlon.network/uploaded.png",
         contentType: "image/jpeg",
+        fileName: null,
       });
 
       const result = await uploadImageFromUrl(

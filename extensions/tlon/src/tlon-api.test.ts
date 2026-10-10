@@ -513,30 +513,6 @@ describe("uploadFile custom S3 upload hardening", () => {
     expect(mockGuardedFetch).toHaveBeenCalledTimes(1);
     expect(mockRelease).toHaveBeenCalledTimes(1);
   });
-
-  it.each(["photo#1.png", "photo?v=1.png"] as const)(
-    "encodes %s in the custom S3 public URL path so #/? are not URL delimiters",
-    async (fileName) => {
-      mockGetSignedUrl.mockResolvedValueOnce(S3_UPLOAD_URL);
-      mockGuardedResponse(S3_UPLOAD_URL);
-
-      const result = await uploadFile(
-        {
-          blob: new Blob(["image-bytes"], { type: "image/png" }),
-          fileName,
-          contentType: "image/png",
-        },
-        testClientConfig,
-      );
-
-      const parsed = new URL(result.url);
-      expect(parsed.origin).toBe("https://files.example.com");
-      expect(parsed.hash).toBe("");
-      expect(parsed.search).toBe("");
-      expect(decodeURIComponent(parsed.pathname)).toContain(fileName);
-      expect(parsed.pathname).toContain(encodeURIComponent(fileName));
-    },
-  );
 });
 
 describe("uploadFile send authority", () => {

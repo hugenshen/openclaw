@@ -46,7 +46,9 @@ export async function uploadImageFromUrl(
 
     // Prefer the fetch helper's Content-Disposition name; URL path is fallback.
     const fileName =
-      fetched.fileName?.trim() || url.pathname.split("/").pop()?.trim() || `upload-${Date.now()}.png`;
+      fetched.fileName?.trim() ||
+      url.pathname.split("/").pop()?.trim() ||
+      `upload-${Date.now()}.png`;
 
     const result = await uploadFile(
       { blob, fileName, contentType },

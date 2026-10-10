@@ -26,6 +26,7 @@ vi.mock("openclaw/plugin-sdk/media-runtime", async (importOriginal) => {
   };
 });
 
+// mock-isolation: Observe the selected upload filename without exercising live Tlon storage.
 vi.mock("../tlon-api.js", () => ({
   uploadFile: vi.fn(),
 }));

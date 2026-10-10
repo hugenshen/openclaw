@@ -7,10 +7,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { authenticate } from "./urbit/auth.js";
 import { scryUrbitPath } from "./urbit/channel-ops.js";
 
+// mock-isolation: Loopback S3 proof must not authenticate against a live Urbit ship.
 vi.mock("./urbit/auth.js", () => ({
   authenticate: vi.fn(),
 }));
 
+// mock-isolation: Storage discovery is stubbed so the signed PUT targets the local S3 fixture.
 vi.mock("./urbit/channel-ops.js", () => ({
   scryUrbitPath: vi.fn(),
 }));
@@ -27,9 +29,7 @@ const PNG_BYTES = Buffer.from(
 
 const BUCKET = "uploads";
 
-async function withLoopbackS3(
-  run: (origin: string) => Promise<void>,
-): Promise<void> {
+async function withLoopbackS3(run: (origin: string) => Promise<void>): Promise<void> {
   const objects = new Map<string, Buffer>();
   const server = createServer((request: IncomingMessage, response: ServerResponse) => {
     const url = new URL(request.url ?? "/", "http://127.0.0.1");

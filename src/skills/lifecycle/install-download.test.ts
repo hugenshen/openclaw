@@ -673,22 +673,53 @@ describe("installDownloadSpec extraction safety", () => {
     },
   );
 
-  it("does not guess an archive type from a URL without an extension or Content-Disposition filename", async () => {
-    mockArchiveResponse(Buffer.from("plain-bytes"));
-    const result = await installDownloadSpec({
-      skillKey: "cd-missing-archive-name",
-      spec: {
-        kind: "download",
-        id: "dl",
-        url: "https://example.invalid/download",
-        extract: true,
-        targetDir: "runtime",
-      },
-      timeoutMs: 30_000,
-    });
-    expect(result.ok).toBe(false);
-    expect(result.message).toBe("extract requested but archive type could not be detected");
-  });
+  it.each([undefined, false])(
+    "keeps extensionless downloads unextracted with extract=%s",
+    async (extract) => {
+      const payload = Buffer.from("not an archive");
+      fetchWithSsrFGuardMock.mockResolvedValue({
+        response: new Response(payload, {
+          headers: { "content-disposition": 'attachment; filename="runtime.zip"' },
+        }),
+        release: async () => undefined,
+      });
+      const skillKey = `cd-download-only-${extract}`;
+      const result = await installDownloadSpec({
+        skillKey,
+        spec: { kind: "download", url: "https://example.invalid/download", extract },
+        timeoutMs: 30_000,
+      });
+      expect(result.ok).toBe(true);
+      await expect(
+        fs.readFile(path.join(resolveSkillToolsRootDir(skillKey), "download")),
+      ).resolves.toEqual(payload);
+    },
+  );
+
+  it.each([undefined, 'attachment; filename="one.zip"; filename="two.zip"'])(
+    "fails cleanly without a usable archive name: %s",
+    async (disposition) => {
+      fetchWithSsrFGuardMock.mockResolvedValue({
+        response: new Response("plain-bytes", {
+          headers: disposition ? { "content-disposition": disposition } : {},
+        }),
+        release: async () => undefined,
+      });
+      const result = await installDownloadSpec({
+        skillKey: "cd-missing-archive-name",
+        spec: {
+          kind: "download",
+          id: "dl",
+          url: "https://example.invalid/download",
+          extract: true,
+          targetDir: "runtime",
+        },
+        timeoutMs: 30_000,
+      });
+      expect(result.ok).toBe(false);
+      expect(result.message).toBe("extract requested but archive type could not be detected");
+    },
+  );
 
   it.each([
     {
@@ -711,6 +742,22 @@ describe("installDownloadSpec extraction safety", () => {
       disposition: 'attachment; filename="download"',
       urlPath: "/runtime.zip",
     },
+    ...[
+      'attachment; filename="wrong.tar.gz"; filename="runtime.zip"',
+      "attachment; filename*=UTF-8''wrong.tar.gz; filename*=UTF-8''runtime.zip",
+      'attachment; filename="wrong.tar.gz"; FILENAME="runtime.zip"',
+      'attachment; filename="wrong.tar.gz',
+      'attachment; filename="wrong.tar.gz"garbage',
+      "attachment; filename*=UTF-8'invalid language'wrong.tar.gz",
+      "attachment; filename*=UTF-8'--'wrong.tar.gz",
+      "attachment; filename*=UTF-8''wrong%GG.tar.gz",
+      "attachment; filename*=UTF-8''wrong%FF.tar.gz",
+      "attachment; filename=\"wrong.tar.gz\"; filename*=UTF-8''",
+    ].map((disposition) => ({
+      name: disposition,
+      disposition,
+      urlPath: "/runtime.zip",
+    })),
   ])("extracts a zip using Content-Disposition $name", async ({ disposition, name, urlPath }) => {
     const executableContents = "#!/bin/sh\nprintf verified\\n\n";
     const zip = new JSZip();

@@ -41,74 +41,49 @@ function resolveDownloadTargetDir(skillKey: string, spec: SkillInstallSpec): str
   return resolved;
 }
 
-function* parseSkillInstallDispositionParameters(header: string): Generator<{
-  name: string;
-  value: string;
-}> {
-  let start = 0;
-  let quoted = false;
-  let escaped = false;
-  for (let index = 0; index <= header.length; index += 1) {
-    const character = header[index];
-    if (escaped || (quoted && character === "\\")) {
-      escaped = !escaped;
-      continue;
-    }
-    if (character === '"') {
-      quoted = !quoted;
-      continue;
-    }
-    if (index !== header.length && (quoted || character !== ";")) {
-      continue;
-    }
-    const parameter = header.slice(start, index).trim();
-    start = index + 1;
-    const separator = parameter.indexOf("=");
-    if (separator <= 0) {
-      continue;
-    }
-    let value = parameter.slice(separator + 1).trim();
-    if (
-      (value.startsWith('"') && value.endsWith('"') && value.length >= 2) ||
-      (value.startsWith("'") && value.endsWith("'") && value.length >= 2)
-    ) {
-      value = value.slice(1, -1);
-    }
-    yield {
-      name: parameter.slice(0, separator).trim().toLowerCase(),
-      value,
-    };
-  }
-}
-
 function parseSkillInstallFileName(header: string | null): string | undefined {
-  if (!header) {
+  const disposition = /^[\t ]*[!#$%&'*+.^_`|~\da-z-]+[\t ]*/i.exec(header ?? "");
+  if (!header || !disposition) {
     return undefined;
   }
-  let fallback: string | undefined;
-  for (const parameter of parseSkillInstallDispositionParameters(header)) {
-    if (parameter.name === "filename*") {
-      const match = /^([^']*)'[^']*'(.*)$/u.exec(parameter.value);
-      const charset = match?.[1]?.toLowerCase();
-      const encoded = match?.[2];
-      if (charset === "utf-8" && encoded) {
-        try {
-          const decoded = path.basename(decodeURIComponent(encoded)).replace(/[\\/]/g, "_");
-          if (decoded) {
-            return decoded;
-          }
-        } catch {
-          // Keep scanning for a quoted filename= fallback.
-        }
-      }
-      continue;
+  const parameter =
+    /;[\t ]*([!#$%&'*+.^_`|~\da-z-]+)[\t ]*=[\t ]*(?:"((?:[\t\x20-\x21\x23-\x5b\x5d-\x7e\x80-\xff]|\\[\t\x20-\x7e\x80-\xff])*)"|([!#$%&'*+.^_`|~\da-z-]+))[\t ]*/giy;
+  let filename: string | undefined;
+  let extended: string | undefined;
+  let offset = disposition[0].length;
+  while (offset < header.length) {
+    parameter.lastIndex = offset;
+    const match = parameter.exec(header);
+    if (!match) {
+      return undefined;
     }
-    if (parameter.name === "filename") {
-      const decoded = path.basename(parameter.value).replace(/[\\/]/g, "_");
-      fallback ??= decoded || undefined;
+    offset = parameter.lastIndex;
+    const name = match[1].toLowerCase();
+    if (name === "filename") {
+      if (filename !== undefined) {
+        return undefined;
+      }
+      filename = match[2]?.replace(/\\([\s\S])/g, "$1") ?? match[3];
+    } else if (name === "filename*") {
+      if (extended !== undefined || match[2] !== undefined) {
+        return undefined;
+      }
+      const value =
+        /^utf-8'(?:[a-z]{1,8}(?:-[a-z\d]{1,8})*)?'((?:[!#$&+.^_`|~\da-z-]|%[\da-f]{2})*)$/i.exec(
+          match[3],
+        );
+      if (!value) {
+        return undefined;
+      }
+      try {
+        extended = decodeURIComponent(value[1]);
+      } catch {
+        return undefined;
+      }
     }
   }
-  return fallback;
+  // An empty extended filename still overrides filename; the caller then uses the URL.
+  return (extended ?? filename) || undefined;
 }
 
 function detectArchiveType(filename: string | undefined): string | undefined {
@@ -137,7 +112,10 @@ function resolveArchiveType(
   if (explicit) {
     return explicit;
   }
-  return detectArchiveType(headerFileName) ?? detectArchiveType(filename);
+  return (
+    detectArchiveType(spec.extract === true ? headerFileName : undefined) ??
+    detectArchiveType(filename)
+  );
 }
 
 async function downloadFile(params: {

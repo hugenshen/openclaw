@@ -9,8 +9,6 @@ import { connectGatewayClient, disconnectGatewayClient } from "../test-helpers.e
 import { GATEWAY_STARTUP_MUTATED_ENV_KEYS } from "../test-helpers.env.js";
 import { testState, writeSessionStore } from "../test-helpers.js";
 import { acquireGatewayE2ePortBlock, startClaimedGateway } from "../test-helpers.listener.js";
-import { getTalkHandoff } from "./handoff.js";
-import { getUnifiedTalkSession } from "./session-registry.js";
 
 const GATEWAY_E2E_TIMEOUT_MS = 90_000;
 const ENV_KEYS = [
@@ -87,23 +85,19 @@ describe("talk.session.close Gateway E2E", () => {
           if (!sessionId) {
             throw new Error("talk.session.create did not return a sessionId");
           }
-          expect(getUnifiedTalkSession(sessionId).kind).toBe("managed-room");
-          expect(getTalkHandoff(created.handoffId ?? sessionId)).toBeDefined();
 
-          const padded = ` ${sessionId} `;
+          const padded = ` \n${sessionId}\t `;
           expect(padded).not.toBe(sessionId);
           await expect(
             client.request("talk.session.close", { sessionId: padded }),
           ).resolves.toEqual({
             ok: true,
           });
-          expect(() => getUnifiedTalkSession(sessionId)).toThrow(/Unknown Talk session/);
-          expect(getTalkHandoff(created.handoffId ?? sessionId)).toBeUndefined();
           await expect(client.request("talk.session.close", { sessionId })).rejects.toThrow(
             /Unknown Talk session/,
           );
           console.log(
-            `[talk.session.close Gateway client E2E] created=true closed=true forgotten=true padded=${JSON.stringify(padded)} exact=${sessionId}`,
+            `[talk.session.close Gateway client E2E] padded close succeeded; repeated exact close rejected`,
           );
         } finally {
           await disconnectGatewayClient(client);

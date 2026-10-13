@@ -234,7 +234,7 @@ export function rememberUnifiedTalkSession(
   sessionId: string,
   session: UnifiedTalkSessionRecord,
 ): void {
-  unifiedTalkSessions.set(sessionId.trim(), session);
+  unifiedTalkSessions.set(sessionId, session);
 }
 
 export function getUnifiedTalkSession(sessionId: string): UnifiedTalkSessionRecord {

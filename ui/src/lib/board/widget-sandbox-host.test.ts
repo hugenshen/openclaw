@@ -1006,9 +1006,6 @@ describe("BoardWidgetSandboxHost", () => {
       });
       expect(requestCount).toBe(1);
       await vi.waitFor(() => expect(socketClosed).toBe(true), { timeout: 2_000 });
-      console.log(
-        `[board widget html cap proof] transport=node:http+fetch cap_bytes=${WIDGET_HTML_MAX_UTF8_BYTES} advertised=${advertised} rejected=true socket_closed=true`,
-      );
     } finally {
       host.dispose();
       await closeServer(server);

@@ -58,25 +58,25 @@ function parseSkillInstallFileName(header: string | null): string | undefined {
       return undefined;
     }
     offset = parameter.lastIndex;
-    const name = match[1].toLowerCase();
+    const name = match[1]!.toLowerCase();
     if (name === "filename") {
       if (filename !== undefined) {
         return undefined;
       }
-      filename = match[2]?.replace(/\\([\s\S])/g, "$1") ?? match[3];
+      filename = match[2]?.replace(/\\([\s\S])/g, "$1") ?? match[3]!;
     } else if (name === "filename*") {
       if (extended !== undefined || match[2] !== undefined) {
         return undefined;
       }
       const value =
         /^utf-8'(?:[a-z]{1,8}(?:-[a-z\d]{1,8})*)?'((?:[!#$&+.^_`|~\da-z-]|%[\da-f]{2})*)$/i.exec(
-          match[3],
+          match[3]!,
         );
       if (!value) {
         return undefined;
       }
       try {
-        extended = decodeURIComponent(value[1]);
+        extended = decodeURIComponent(value[1]!);
       } catch {
         return undefined;
       }

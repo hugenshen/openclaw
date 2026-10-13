@@ -3,6 +3,7 @@ import { sliceUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import { formatCliCommand } from "../cli/command-format.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { executeExistingOpenClawStateRead } from "../state/openclaw-state-db-readonly.js";
+import type { OpenClawStateReadCommand } from "../state/openclaw-state-read.types.js";
 import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
 import type { OpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.types.js";
 import {
@@ -281,10 +282,7 @@ export async function readUpdateFailureReportReceipt(
     { context, current: true },
   );
   context.admission.assertCurrent();
-  if (reply && !reply.ok) {
-    throw new Error(reply.message);
-  }
-  return reply?.ok && reply.type === "restartSentinel.reportReceipt" ? reply.receipt : null;
+  return reply?.receipt ?? null;
 }
 
 export async function hasUpdateFailureReportArtifactSweepLease(
@@ -337,10 +335,10 @@ export async function readRestartSentinelSnapshot(env: NodeJS.ProcessEnv = proce
   revision: number | null;
 }> {
   const reply = await readSentinelState(
-    "restartSentinel.snapshot",
+    { type: "restartSentinel.snapshot", input: undefined },
     captureOpenClawStateWorkerContext({ env }),
   );
-  if (!reply?.ok || reply.type !== "restartSentinel.snapshot") {
+  if (!reply) {
     throw new Error("Restart sentinel snapshot unavailable");
   }
   return reply.snapshot;
@@ -353,16 +351,7 @@ export async function finalizeUpdateRestartSentinelRunningVersion(
   runningRoot?: string | null,
 ): Promise<RestartSentinel | null> {
   const context = captureOpenClawStateWorkerContext({ env });
-  let snapshot: RestartSentinel | null;
-  try {
-    const reply = await readSentinelState("restartSentinel.current", context);
-    snapshot = currentSentinel(
-      reply?.ok && reply.type === "restartSentinel.current" ? reply.state : undefined,
-    );
-  } catch (err) {
-    sentinelLog.warn(`Failed to read restart sentinel: ${formatErrorMessage(err)}`);
-    return null;
-  }
+  const snapshot = await readCurrentRestartSentinel(() => context, false);
   if (!snapshot || snapshot.payload.kind !== "update") {
     return null;
   }
@@ -407,23 +396,26 @@ export async function clearRestartSentinelIfRevision(
   );
 }
 
-async function readSentinelState(
-  type: "restartSentinel.current" | "restartSentinel.snapshot" | "restartSentinel.installReceipt",
-  context: OpenClawStateWorkerContext,
-  existingOnly = false,
-) {
+async function readSentinelState<
+  Command extends Extract<
+    OpenClawStateReadCommand,
+    {
+      type:
+        | "restartSentinel.current"
+        | "restartSentinel.snapshot"
+        | "restartSentinel.installReceipt";
+    }
+  >,
+>(command: Command, context: OpenClawStateWorkerContext, existingOnly = false) {
   if (!existingOnly) {
     await executeOpenClawStateWorker(context, { type: "restartSentinel.admit", input: undefined });
   }
   const reply = await executeExistingOpenClawStateRead(
     { env: context.environment, path: context.admission.databasePath },
-    { type, input: undefined },
+    command,
     { context },
   );
   context.admission.assertCurrent();
-  if (reply && !reply.ok) {
-    throw new Error(reply.message);
-  }
   return reply;
 }
 
@@ -435,20 +427,19 @@ function currentSentinel(current: RestartSentinelRowState | undefined): RestartS
 }
 
 async function readCurrentRestartSentinel(
-  env: NodeJS.ProcessEnv,
+  resolveContext: () => OpenClawStateWorkerContext,
   existingOnly: boolean,
+  action: "read" | "check" = "read",
 ): Promise<RestartSentinel | null> {
   try {
     const reply = await readSentinelState(
-      "restartSentinel.current",
-      captureOpenClawStateWorkerContext({ env }),
+      { type: "restartSentinel.current", input: undefined },
+      resolveContext(),
       existingOnly,
     );
-    return currentSentinel(
-      reply?.ok && reply.type === "restartSentinel.current" ? reply.state : undefined,
-    );
+    return currentSentinel(reply?.state);
   } catch (err) {
-    sentinelLog.warn(`Failed to read restart sentinel: ${formatErrorMessage(err)}`);
+    sentinelLog.warn(`Failed to ${action} restart sentinel: ${formatErrorMessage(err)}`);
     return null;
   }
 }
@@ -456,14 +447,14 @@ async function readCurrentRestartSentinel(
 export function readRestartSentinel(
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<RestartSentinel | null> {
-  return readCurrentRestartSentinel(env, false);
+  return readCurrentRestartSentinel(() => captureOpenClawStateWorkerContext({ env }), false);
 }
 
 /** Read the restart sentinel without creating or mutating shared state. */
 export function readRestartSentinelReadOnly(
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<RestartSentinel | null> {
-  return readCurrentRestartSentinel(env, true);
+  return readCurrentRestartSentinel(() => captureOpenClawStateWorkerContext({ env }), true);
 }
 
 async function readUpdateInstallReceiptPayload(
@@ -471,12 +462,10 @@ async function readUpdateInstallReceiptPayload(
 ): Promise<RestartSentinelPayload | null> {
   try {
     const reply = await readSentinelState(
-      "restartSentinel.installReceipt",
+      { type: "restartSentinel.installReceipt", input: undefined },
       captureOpenClawStateWorkerContext({ env }),
     );
-    return reply?.ok && reply.type === "restartSentinel.installReceipt"
-      ? (reply.sentinel?.payload ?? null)
-      : null;
+    return reply?.sentinel?.payload ?? null;
   } catch (err) {
     sentinelLog.warn(`Failed to read update install receipt: ${formatErrorMessage(err)}`);
     return null;
@@ -510,20 +499,13 @@ export async function readVerifiedGitUpdateReceipt(
 }
 
 export async function hasRestartSentinel(env: NodeJS.ProcessEnv = process.env): Promise<boolean> {
-  try {
-    const reply = await readSentinelState(
-      "restartSentinel.current",
-      captureOpenClawStateWorkerContext({ env }),
-    );
-    return (
-      currentSentinel(
-        reply?.ok && reply.type === "restartSentinel.current" ? reply.state : undefined,
-      ) !== null
-    );
-  } catch (err) {
-    sentinelLog.warn(`Failed to check restart sentinel: ${formatErrorMessage(err)}`);
-    return false;
-  }
+  return (
+    (await readCurrentRestartSentinel(
+      () => captureOpenClawStateWorkerContext({ env }),
+      false,
+      "check",
+    )) !== null
+  );
 }
 
 export function formatRestartSentinelMessage(payload: RestartSentinelPayload): string {

@@ -3,6 +3,244 @@ import { en } from "./en.ts";
 
 // Settings copy loads with its lazy page or search, not the startup shell.
 const enSettings = {
+  talkPage: {
+    intro: "Configure realtime voice providers, models, and speaker voices.",
+    voiceSection: {
+      title: "Realtime voice",
+      description:
+        "Continuous speech conversations with your agent. The pickers below write talk.realtime settings; the full form further down covers everything else.",
+    },
+    status: {
+      title: "Status",
+      ready: "Ready",
+      notReady: "Not configured",
+      unavailable: "Unavailable",
+      unavailableHint: "Connect to the Gateway to check realtime voice readiness.",
+      activeProvider: "Active provider: {provider}",
+      noProvider: "No realtime voice provider is configured yet.",
+    },
+    provider: {
+      title: "Provider",
+      description: "Auto picks the first provider with working credentials.",
+      auto: "Auto",
+    },
+    model: {
+      title: "Model",
+      description: "Realtime voice model for browser Talk sessions.",
+      default: "Provider default",
+      defaultNamed: "Default ({model})",
+    },
+    voice: {
+      title: "Speaker voice",
+      description: "Voice used for spoken replies. GPT-Live locks the voice once a call starts.",
+      default: "Provider default",
+      unsupported: "unsupported",
+      unsupportedDefault:
+        "This saved voice is unavailable for the selected route. Provider default will be used.",
+    },
+    gptLive: {
+      title: "GPT-Live",
+      hint: "Released browser/Gateway-owned WebRTC tries OAuth first and falls back to a Platform API key. Direct backend sockets and unlisted or private routes require Platform API-key access. Delegated work can be steered while running and requires exact spoken confirmation for high-impact actions.",
+      ready: "Ready",
+    },
+  },
+  configForm: {
+    sections: {
+      env: {
+        label: "Environment Variables",
+        description: "Environment variables passed to the gateway process",
+      },
+      update: {
+        label: "Updates",
+        description: "Auto-update settings and release channel",
+      },
+      agents: {
+        label: "Agents",
+        description: "Agent configurations, models, and identities",
+      },
+      auth: {
+        label: "Authentication",
+        description: "API keys and authentication profiles",
+      },
+      channels: {
+        label: "Channels",
+        description: "Messaging channels (Telegram, Discord, Slack, etc.)",
+      },
+      messages: {
+        label: "Messages",
+        description: "Message handling and routing settings",
+      },
+      commands: {
+        label: "Commands",
+        description: "Custom slash commands",
+      },
+      hooks: {
+        label: "Hooks",
+        description: "Webhooks and event hooks",
+      },
+      skills: {
+        label: "Skills",
+        description: "Skill packs and capabilities",
+      },
+      tools: {
+        label: "Tools",
+        description: "Tool configurations (browser, search, etc.)",
+      },
+      gateway: {
+        label: "Gateway",
+        description: "Gateway server settings (port, auth, binding)",
+      },
+      wizard: {
+        label: "Setup",
+        description: "Discovery preferences for setup and read-only setup history.",
+      },
+      meta: {
+        label: "Metadata",
+        description: "Gateway metadata and version information",
+      },
+      logging: {
+        label: "Logging",
+        description: "Log levels and output configuration",
+      },
+      browser: {
+        label: "Browser",
+        description: "Browser automation settings",
+      },
+      ui: {
+        label: "UI",
+        description: "User interface preferences",
+      },
+      models: {
+        label: "Models",
+        description: "AI model configurations and providers",
+      },
+      bindings: {
+        label: "Bindings",
+        description: "Key bindings and shortcuts",
+      },
+      broadcast: {
+        label: "Broadcast",
+        description: "Broadcast and notification settings",
+      },
+      tts: {
+        label: "Voice",
+        description: "Text-to-speech output, voices, and personas",
+      },
+      session: {
+        label: "Session",
+        description: "Session management and persistence",
+      },
+      cron: {
+        label: "Automations",
+        description: "Scheduled tasks and automation",
+      },
+      discovery: {
+        label: "Discovery",
+        description: "Service discovery and networking",
+      },
+      talk: {
+        label: "Talk",
+        description: "Voice and speech settings",
+      },
+      plugins: {
+        label: "Plugins",
+        description: "Plugin management and extensions",
+      },
+      diagnostics: {
+        label: "Diagnostics",
+        description: "Instrumentation, OpenTelemetry, and cache-trace settings",
+      },
+      cli: {
+        label: "CLI",
+        description: "CLI banner and startup behavior",
+      },
+      secrets: {
+        label: "Secrets",
+        description: "Secret provider configuration",
+      },
+      acp: {
+        label: "ACP",
+        description: "Agent Communication Protocol runtime and streaming settings",
+      },
+      mcp: {
+        label: "MCP",
+        description: "Model Context Protocol server definitions",
+      },
+    },
+  },
+  agentTools: {
+    pluginSource: "Plugin",
+    channelSource: "Channel: {id}",
+    channel: "Channel",
+    builtIn: "Built-In",
+    plugin: "Plugin: {id}",
+    optional: "Optional",
+    inPreview: "Included in preview",
+    disabledByOverride: "Disabled by agent override.",
+    enabledByProfile: "Enabled by the current profile.",
+    enabledByOverride: "Enabled by agent override.",
+    notIncluded: "Not included in the current profile.",
+    overrideOff: "Override Off",
+    enabled: "Enabled",
+    overrideOn: "Override On",
+    profileOff: "Profile Off",
+    notListed: "Not listed",
+    otherAgent: "Other Agent",
+    title: "Tool access",
+    subtitle:
+      "Choose tools for this agent. Full selects tools; it does not grant Full Access execution permissions.",
+    enabledSummary: "{enabled}/{total} enabled.",
+    enableAll: "Enable All",
+    disableAll: "Disable All",
+    loadConfig: "Load the gateway config to adjust tool profiles.",
+    explicitAllowlist:
+      "This agent is using an explicit allowlist in config. Tool overrides are managed in the Config tab.",
+    globalAllowlist:
+      "Global tools.allow is set. Agent overrides cannot enable tools that are globally blocked.",
+    loadingCatalog: "Loading runtime tool catalog…",
+    catalogFallback: "Could not load runtime tool catalog. Showing built-in fallback list instead.",
+    previewTitle: "Tool preview",
+    previewSubtitle:
+      "Based on saved session settings and discovered tools. Availability is checked when a run starts, and additional tools may become available then. Changes may take time to appear here; unsaved edits are not included. Session:",
+    noSession: "no session",
+    switchAgent: "Switch chat to this agent to view its tool preview.",
+    previewLoading: "Loading…",
+    previewUnavailable: "Unavailable",
+    previewNotLoaded: "Not loaded",
+    loadingPreview: "Loading tool preview…",
+    previewError: "Could not load the tool preview for this session.",
+    emptyPreview:
+      "No tools are listed in this preview. Run-specific tools may still become available.",
+    morePreviewTitle: "{count} more tools are listed in the groups below.",
+    morePreview: "+{count} more listed tools",
+    quickPresets: "Tool Presets",
+    catalogTitle: "Tool Catalog",
+    inherit: "Inherit",
+    profile: "Tool profile",
+    source: "Source",
+    listed: "Listed in preview",
+    status: "Status",
+    profileSourceAgent: "agent override",
+    profileSourceGlobal: "global default",
+    profileSourceDefault: "default",
+    statusSaving: "saving…",
+    statusUnsaved: "unsaved",
+    statusSaved: "saved",
+    toolPreview: "Tool preview",
+    more: "+{count} more",
+    toolsOne: "{count} Tool",
+    tools: "{count} Tools",
+    enabledToolsOne: "{count} Enabled Tool",
+    enabledTools: "{count} Enabled Tools",
+    listedToolsOne: "{count} Listed Tool",
+    listedTools: "{count} Listed Tools",
+    access: "Agent setting",
+    disableNamed: "Disable {name}",
+    enableNamed: "Enable {name}",
+    defaultPresets: "Default Presets",
+    previewVia: "Listed in preview via {source}.",
+    linkTool: "Link to This Tool",
+  },
   searchPage: {
     enabled: "Web search",
     advanced: "Advanced search settings",
@@ -154,39 +392,44 @@ const enSettings = {
     },
   },
   cloudWorkersPage: {
-    snapshots: {
-      title: "Snapshots",
-      viewLabel: "Cloud worker view",
-      unavailable:
-        "Snapshots are available when the Crabbox worker provider is enabled and the Gateway advertises them.",
-      adminRequired: "Administrator access is required to inspect and manage snapshots.",
-      empty: "No snapshots are recorded locally.",
-      profileEmpty: "No snapshots are recorded for this profile.",
-      images: "Images",
+    environments: {
+      docs: "Docs",
+      devcontainer: "Dev Container",
+      detected: "Detected",
+      phases: {
+        onCreate: "onCreateCommand",
+        updateContent: "updateContentCommand",
+        detectedInstall: "Install dependencies",
+      },
+      machines: "Machines",
+      repositories: "Repositories",
+      ready: "Ready",
       building: "Building",
-      held: "Held by sessions",
+      coldOnly: "Cold only",
       attention: "Needs attention",
-      unlabeledProfile: "Unlabeled profile",
-      machineImage: "Machine image",
-      projectImage: "Project image",
-      warmOn: "Warm images on",
-      warmOff: "Warm images off",
-      available: "Available",
-      retiring: "Retiring",
-      retirementPending: "Checkpoint deletion pending",
+      snapshot: "Snapshot",
+      setup: "Setup",
+      machine: "Machine",
+      advanced: "Advanced",
+      retention: "Snapshot retention",
+      machineImages: "Machine images",
+      change: "Change",
+      built: "Built {age}",
+      actions: "Environment actions",
+      pinPrevious: "Pin previous",
+      unpinPrevious: "Unpin previous",
+      pool: "{count} ready workers · Pool cap",
+      poolCap: "Pool cap",
+      localOnly: "Rebuild requires a Gateway-local repository.",
+      identityUnavailable: "A repository identity is required to change its default machine.",
+      adminRequired: "Connect with administrator access to view cloud environments.",
+      empty: "The first cloud session for a repository prepares it and saves a snapshot.",
+    },
+    snapshots: {
       retirementHint:
         "Checkpoint {checkpoint} is awaiting deletion. Cleanup retries during the next warm-image capture or worker teardown. Inspect openclaw crabbox warm-images --json and resolve provider deletion errors if it remains pending.",
-      scrubbing: "Building: scrubbing",
-      creating: "Building: creating",
       uncertain: "Paused: uncertain",
-      noImage: "No image",
-      pending: "Pending",
-      created: "Created {age}",
       lastUsed: "Last used {age}",
-      allocations: "Allocations: {count}",
-      runtime: "Runtime: {digest}",
-      baseCommit: "Commit: {commit}",
-      pinned: "Pinned",
       pin: "Pin",
       unpin: "Unpin",
       delete: "Delete",
@@ -197,15 +440,10 @@ const enSettings = {
       deleteHeld: "Outstanding allocations still hold this snapshot.",
       deleteCapturing: "Wait for the active capture to finish before deleting this snapshot.",
       deletionRetiring: "Snapshot deletion is pending. Maintenance will retry provider cleanup.",
-      captureOrRetirement: "Wait for the active capture or checkpoint deletion to finish.",
-      previous: "Previous",
       rollback: "Roll back",
       rollbackTitle: "Roll back snapshot",
       rollbackMessage:
         "Restore this previous checkpoint as the current image. The current image becomes the previous generation, or is retired when the retention policy keeps no previous generation unless it is pinned. Existing allocations keep their recorded checkpoint.",
-      retentionPolicy: "Retention policy",
-      retentionHelp:
-        "Pinned checkpoints are exempt from age refresh, unused expiry, and capacity eviction. A runtime or recipe change still starts new workers cold until a compatible capture publishes.",
       refreshAfter: "Refresh after",
       refreshAfterHelp: "Default: 24h. Use whole minutes, hours, or days; minimum 1h.",
       refreshAfterInvalid:
@@ -218,20 +456,10 @@ const enSettings = {
       keepNone: "None (default)",
       keepOne: "Keep one",
       savePolicy: "Save retention policy",
-      policyApplies: "Policy changes apply without restarting the Gateway.",
       policySaved: "Retention policy saved.",
       policySaveFailed: "Could not save retention policy. Refresh the config and try again.",
-      buildSnapshot: "Build snapshot",
       rebuild: "Rebuild",
-      profile: "Profile",
-      repository: "Repository",
-      chooseProfile: "Choose a profile",
-      chooseRepository: "Choose a repository",
       selectBuildInputs: "Choose an enabled profile and a local repository.",
-      buildHelp:
-        "Prepare the repository's committed HEAD and run its committed setup recipe without starting a session.",
-      noRepositories:
-        "No local repositories were found. Add a local project from New Session, then reopen this dialog.",
       buildStarted: "Build started",
       buildReused: "Reusing the build already in progress",
       capacity:
@@ -239,7 +467,7 @@ const enSettings = {
       invalidProject:
         "The repository must be an accessible local Git checkout root with a HEAD commit. Select another repository or fix the checkout, then try again.",
       invalidProfile:
-        "This profile is unavailable or does not support project preparation. Refresh and select an eligible profile.",
+        "This machine is unavailable or does not support project preparation. Choose another machine or check its configuration, then rebuild.",
       cancelBuild: "Cancel build",
       cancelBuildMessage:
         "Stop this snapshot build and destroy its worker? OpenClaw waits for provider work and cleanup to finish.",
@@ -249,7 +477,6 @@ const enSettings = {
       dismissBuildMessage:
         "Request cleanup for this failed build and hide it from this view. The Gateway keeps the failed record until its retention window ends, so it can reappear after a reload.",
       buildDismissed: "Failed build dismissed",
-      buildAge: "Age: {age}",
       buildStates: {
         requested: "Requested",
         provisioning: "Provisioning",
@@ -263,21 +490,15 @@ const enSettings = {
         failed: "Failed",
         orphaned: "Orphaned",
       },
-      refresh: "Refresh",
       recover: "Recover",
       recoverTitle: "Recover paused capture",
       recoverMessage:
         "Clear this capture reservation after manual provider cleanup. Recovery preserves recorded images and allocation choices. It does not stop workers or delete provider artifacts.",
       acknowledgement: "I stopped the owning capture and worker and reconciled provider artifacts",
       recovered: "Capture reservation cleared. The next eligible worker can capture again.",
-      recoveryChanged: "The Gateway connection changed. Refresh snapshots and try recovery again.",
-      migration: "Needs migration",
-      migrationHint:
-        "Run openclaw doctor --fix and follow its provider-cleanup recovery instructions before provisioning workers.",
+      recoveryChanged:
+        "The Gateway connection changed. Select the repository and try recovery again.",
     },
-    intro: "Run agent sessions on ephemeral cloud machines instead of this gateway.",
-    sectionTitle: "Profiles",
-    sectionDescription: "Each profile defines how its provider provisions and retires a worker.",
     empty: "No cloud worker profiles are configured.",
     addProfile: "Add profile",
     editProfile: "Edit profile",
@@ -287,7 +508,7 @@ const enSettings = {
       "Delete profile {profile}? Repository defaults that use this profile will also be removed. New cloud sessions will no longer use it.",
     advertised: "Advertised",
     unavailable: "Unavailable",
-    profileSaved: "Profile saved. Build a snapshot from the Snapshots view.",
+    profileSaved: "Profile saved.",
     settingsSaved: "Saved. Changes apply without restarting the Gateway.",
     adminRequired: "Administrator access is required to manage cloud worker profiles.",
     catalogFailed: "Could not load advertised profiles: {error}. Check the gateway and retry.",
@@ -300,20 +521,9 @@ const enSettings = {
     desktopFact: "Desktop: {value}",
     providerList: "View supported backends",
     advanced: "Advanced",
-    preparedPool: "Prepared pool",
     preparedPoolHelp:
       "Maximum unassigned workers across projects and profiles. Leave empty for the default of 4; zero drains unused reserves and stops refill. Reserves incur running-machine charges.",
     savePool: "Save pool",
-    repositories: "Repositories",
-    repositoriesHelp:
-      "Choose the default cloud worker profile for each repository. Explicit session profile choices take precedence.",
-    repositoriesEmpty: "No repository defaults are configured.",
-    addRepository: "Add repository",
-    editRepository: "Edit repository",
-    saveRepository: "Save repository",
-    repositoryIdentity: "Repository identity",
-    repositoryIdentityHelp:
-      "Enter host/owner/repo or a Git remote URL. Saved identities use lowercase and omit the trailing .git.",
     repositoryProfile: "Default profile",
     selectProfile: "Choose a profile",
     warmImage: { auto: "Auto", on: "On", off: "Off" },
@@ -378,9 +588,6 @@ const enSettings = {
       setupEnv:
         "Enter at most 16 unique POSIX environment variable names. CRABBOX_ENV_ALLOW is reserved.",
       repository: "Enter a valid repository identity, such as github.com/acme/app.",
-      repositoryExists: "This repository already has a default. Edit its existing mapping.",
-      repositoryMissing:
-        "This repository mapping changed or was removed. Reload the config and try again.",
       repositoryProfile:
         "Choose an existing cloud worker profile. Add a profile first if none are configured.",
       preparedPool: "Enter a non-negative whole number or leave the field empty.",
@@ -400,13 +607,28 @@ const enSettings = {
       action: "Connect provider",
       title: "Connect a provider",
       noOptions: "No account connection methods are available.",
-      method: "Connection method",
+      accounts: "Accounts available to this agent",
+      noAccounts: "No connected accounts for this provider.",
+      connectAccount: "Connect an account",
+      apiKeyHint: "Connect with a key from your provider account.",
+      compareMethods: "Compare connection methods",
       searchProviders: "Search providers…",
       noMatches: "No providers match your search.",
       noProviders: "No providers are available to connect.",
       discover: "On this Gateway",
       description: "Save credentials for this agent. Choose the active model separately.",
+      setupDescription:
+        "Choose how to connect. Verifying an API key or token can also set this agent's active model.",
       done: "Provider credentials saved.",
+      missingSelection:
+        "The account selected for {model} is no longer available. Connect or choose an account to use with this model.",
+      chooseAccount: "Choose account",
+      useAccount: "Use this account",
+      useAccountDescription:
+        "Test {model} with this account and use it for this agent's default. Conversations with their own account selection keep it.",
+      activated: "Account verified and selected for this agent's default model.",
+      selectionChanged:
+        "The selected model or account changed. Close this dialog and choose again.",
       finishing: "Credentials are being saved. Wait for the result.",
       sessionExpired:
         "This sign-in session ended. Close this dialog and refresh Models to check the result.",
@@ -492,7 +714,7 @@ const enSettings = {
       test: "Test connection",
       testing: "Testing…",
       unavailable: "Connection testing requires a newer gateway.",
-      latency: "{ms} ms",
+      latency: "Request round-trip: {ms} ms",
       status: {
         ok: "Connected",
         auth: "Authentication failed",
@@ -549,6 +771,9 @@ const enSettings = {
       disabled: "Disabled",
       fallback: "Fallback Model",
       noFallback: "No fallback model",
+      clearFallbacks: "No fallback model (remove all {count})",
+      moreFallbackOne: "1 more fallback after this one",
+      moreFallbacks: "{count} more fallbacks after this one",
       selectModel: "Select a model",
       noModels: "Configure a chat provider to select a primary, utility, or fallback model.",
       discoveringMore: "Discovering more models…",
@@ -625,7 +850,7 @@ const enSettings = {
       controlUiCommit: "Control UI commit",
       builtAt: "Built",
       installedAt: "Installed",
-      installedAtUnknown: "Unknown · recorded after the next successful update",
+      installedAtUnknown: "Unknown",
       lastCommitAt: "Last commit",
       installKind: "Install type",
       policyTitle: "Update policy",
@@ -672,6 +897,7 @@ const enSettings = {
       failedStep: "Failure details",
       viewDetails: "View details",
       recoveryActions: "Recovery",
+      diagnoseFailure: "Diagnose update",
       checkStatus: "Check status",
       retryUpdate: "Retry update",
       reportFailure: "Report update failure",
@@ -720,6 +946,10 @@ const enSettings = {
       launchAtLogin: "Launch at login",
       launchAtLoginUnavailable:
         "Launch at login requires a bundled app without an active app profile.",
+      keepGatewayRunning: "Keep OpenClaw running when the app is closed",
+      keepGatewayRunningHint:
+        "Runs the Gateway as a background service so channels and automations keep working after you quit OpenClaw.",
+      keepGatewayRunningFailed: "Could not change Gateway hosting.",
       quickChat: "Quick Chat enabled",
       quickChatHint:
         "Show a floating composer for quick messages, summoned with a global shortcut.",
@@ -858,6 +1088,10 @@ const enSettings = {
         accessibility: {
           title: "Accessibility",
           hint: "Control UI elements when an action requires it.",
+        },
+        eventPosting: {
+          title: "Event Posting",
+          hint: "Send keyboard and pointer input when a computer action requires it.",
         },
         screenRecording: {
           title: "Screen Recording",
@@ -1077,7 +1311,6 @@ const enSettings = {
       agentQuestion: "Agent question",
       humanMentioned: "Someone mentions me",
       scheduledTaskFailed: "Scheduled task failed",
-      backgroundTaskFailed: "Background task failed",
       lockScreenDetail: "Lock-screen detail",
       lockScreenDetailHint: "Private hides names; detailed content is sanitized.",
       private: "Private",
@@ -1099,14 +1332,63 @@ const enSettings = {
       theme: "Theme",
       chooseTheme: "Choosing a different theme resets its fonts and accent colors.",
       themeUnavailable: "{id} is unavailable. Using Claw until the theme becomes available again.",
+      background: {
+        title: "Background",
+        hint: "Choose the artwork behind your workspace. This changes only your view.",
+        source: "Artwork",
+        presentation: "Style",
+        faded: "Faded",
+        fadedHint: "Fades into a quiet reading area.",
+        "full-bleed": "Full bleed",
+        "full-bleedHint": "Edge-to-edge artwork with text contrast protected.",
+        placementOffHint: "Both pages are off. Adjust the preview above, then enable a page here.",
+        noneHint: "None keeps both pages plain without removing your saved image or choices.",
+        visibilityZeroHint: "At 0%, the artwork is hidden. Increase visibility to show it again.",
+        none: "None",
+        theme: "Theme artwork",
+        custom: "Custom image",
+        themeChoice: "Theme",
+        customChoice: "Image",
+        choose: "Choose image…",
+        replace: "Replace…",
+        remove: "Remove",
+        imageAlt: "Your background image",
+        formats: "JPEG, PNG, WebP · up to 8 MiB",
+        newSession: "New session page",
+        sessions: "Conversations",
+        visibility: "Image visibility",
+        visibilityHint: "Adjust to preview. Esc to dismiss.",
+
+        browserOnly: "Saved in this browser. Connect with a personal profile to upload an image.",
+        profileRequired: "Connect with a personal profile to save a custom image.",
+        readOnly: "Image uploads require permission to edit your profile.",
+        uploading: "Preparing your image…",
+        removing: "Removing your image…",
+        saved: "Background image saved.",
+        saveFailed: "Could not save your background. Check your connection and try again.",
+        removed: "Background image removed.",
+        unavailable:
+          "Your background image could not be loaded. Choose another image or try again.",
+        invalidFile: "Choose a JPEG, PNG, or WebP image within the upload size limit.",
+        conflict: "Your background changed elsewhere. Check the current selection and try again.",
+        private: "Only your view · saved to your profile.",
+      },
       typography: "Typography",
       fonts: {
         ui: "Interface",
         chat: "Chat prose",
+        terminal: "Terminal font",
+        terminalDefault: "JetBrains Mono + Nerd Font symbols",
+        terminalHint:
+          "Bundled JetBrains Mono + Nerd Font symbols by default. To override, enter a monospace font installed on this computer. Missing fonts use the default; saved in this browser.",
+        terminalLigatures:
+          "The terminal currently renders characters individually; programming ligatures are not supported.",
+        terminalInvalid: "Enter one font family name, without quotes, commas, or CSS declarations.",
+        terminalReset: "Use default",
         themeDefault: "Theme default",
         themeFace: "{theme} · {face}",
         system: "System",
-        previewCaption: "OpenClaw · A little clarity goes a long way",
+        brandedPreviewCaption: "{brand} · A little clarity goes a long way",
         previewProse:
           "Good typography makes room for the conversation. Choose a face that feels comfortable to read.",
         previewCode: 'const greeting = "Hello, world!";',
@@ -1156,6 +1438,23 @@ const enSettings = {
       inlineHintBefore: "Click",
       inlineHintAfter:
         "to add one browser-local tweakcn theme. In tweakcn, use Share and paste the copied link here.",
+      tabIcon: {
+        title: "Browser tab icon",
+        source: "Source",
+        sourceLabel: "Browser tab icon source",
+        default: "Default",
+        agent: "Agent avatar",
+        shape: "Shape",
+        shapeLabel: "Agent avatar shape",
+        square: "Square",
+        rounded: "Rounded corners",
+        circle: "Circle",
+        lobsterdex: "Lobsterdex",
+        lobster: "Lobster",
+        empty: "No lobsters unlocked in this browser yet.",
+        localCollection: "Unlocked in this browser. Your collection is not synced.",
+        unavailable: "This lobster is not unlocked in this browser. Using Default until it is.",
+      },
       textSize: "Text size",
     },
     chatPrefs: {
@@ -1167,7 +1466,10 @@ const enSettings = {
         "Enter a CSS width such as 960px, 82%, min(1280px, 82%), or calc(100% - 2rem).",
       showTaskProgress: "Show task progress cards",
       showTaskProgressHint:
-        "Show task progress in the chat composer. Hiding it does not stop the agent or clear saved progress. Dashboard widgets and session previews are unchanged.",
+        "Show task progress in chat Details and embedded composers. Hiding it does not stop the agent or clear saved progress. Dashboard widgets and session previews are unchanged.",
+      openLinksExternally: "Open links outside OpenClaw",
+      openLinksExternallyHint: "Use your browser instead of the OpenClaw built-in browser.",
+      openLinksExternallyStorage: "Saved in this browser only.",
       collapseTaskProgress: "Collapse task progress by default on desktop",
       collapseTaskProgressHint:
         "On desktop, start task progress collapsed. It can expand when the response finishes if you are at the end of the chat. A manual close keeps it collapsed for that session. On mobile, task progress always starts collapsed and only opens when you open it manually.",
@@ -1490,6 +1792,9 @@ const enSettings = {
 
 export const registerSettingsEnglish = Object.assign(
   () => {
+    Object.assign(en.agentTools, enSettings.agentTools);
+    Object.assign(en.talkPage, enSettings.talkPage);
+    Object.assign(en.configForm.sections, enSettings.configForm.sections);
     en.memoryPage = enSettings.memoryPage;
     en.modelProviders = enSettings.modelProviders;
     en.searchPage = enSettings.searchPage;

@@ -964,14 +964,12 @@ describe("BoardWidgetSandboxHost", () => {
   });
 
   it("rejects Gateway widget HTML that advertises more than the protocol byte cap", async () => {
-    let socketClosed = false;
+    const socketClosed = Promise.withResolvers<void>();
     let requestCount = 0;
     const advertised = WIDGET_HTML_MAX_UTF8_BYTES + 1;
     const server = createServer((request, response) => {
       requestCount += 1;
-      request.socket.once("close", () => {
-        socketClosed = true;
-      });
+      request.socket.once("close", () => socketClosed.resolve());
       // Advertise oversize Content-Length and leave the body open so cancel is
       // visible as a closed TCP socket instead of a full download.
       response.writeHead(200, {
@@ -983,7 +981,8 @@ describe("BoardWidgetSandboxHost", () => {
     const origin = await listenOnLoopback(server);
     const frame = document.createElement("iframe");
     document.body.append(frame);
-    const onError = vi.fn();
+    const rejected = Promise.withResolvers<void>();
+    const onError = vi.fn<(error: Error) => void>(() => rejected.resolve());
     const onLoadFailed = vi.fn();
     const onLoaded = vi.fn();
     const host = new BoardWidgetSandboxHost(
@@ -997,7 +996,8 @@ describe("BoardWidgetSandboxHost", () => {
     );
     notifyProxyReady(host, frame);
     try {
-      await vi.waitFor(() => expect(onError).toHaveBeenCalledOnce());
+      await rejected.promise;
+      expect(onError).toHaveBeenCalledOnce();
       expect(onLoaded).not.toHaveBeenCalled();
       expect(onLoadFailed).not.toHaveBeenCalled();
       expect(onError.mock.calls[0]?.[0]).toMatchObject({
@@ -1005,7 +1005,7 @@ describe("BoardWidgetSandboxHost", () => {
         message: "widget HTML exceeds 10 MiB; regenerate a smaller widget",
       });
       expect(requestCount).toBe(1);
-      await vi.waitFor(() => expect(socketClosed).toBe(true), { timeout: 2_000 });
+      await socketClosed.promise;
     } finally {
       host.dispose();
       await closeServer(server);

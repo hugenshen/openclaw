@@ -982,7 +982,7 @@ describe("BoardWidgetSandboxHost", () => {
     const frame = document.createElement("iframe");
     document.body.append(frame);
     const rejected = Promise.withResolvers<void>();
-    const onError = vi.fn<(error: Error) => void>(() => rejected.resolve());
+    const onError = vi.fn<(error: unknown) => void>(() => rejected.resolve());
     const onLoadFailed = vi.fn();
     const onLoaded = vi.fn();
     const host = new BoardWidgetSandboxHost(

@@ -594,6 +594,23 @@ describe("personal GitHub through authenticated Gateway RPC", () => {
     expect(network.poll).toHaveBeenCalledOnce();
   });
 
+  it("polls and cancels when requestId has clipboard padding", async () => {
+    const started = await start();
+    expect((await readConnection(owner()))?.pending?.requestId).toBe(started.requestId);
+    const padded = `  ${started.requestId}  `;
+    preparePoll();
+    network.poll.mockResolvedValueOnce({ status: "authorization_pending" });
+    expect(
+      (await rpc(alice, "users.github.authorize.poll", { requestId: padded })).mock.calls[0]?.[1],
+    ).toMatchObject({ status: "pending" });
+    // Stored pending ids stay canonical; only the caller id is trimmed for compare/mutate.
+    expect((await readConnection(owner()))?.pending?.requestId).toBe(started.requestId);
+    expect(
+      await rpc(alice, "users.github.authorize.cancel", { requestId: padded }),
+    ).toHaveBeenCalledWith(true, { cancelled: true });
+    expect((await readConnection(owner()))?.pending).toBeUndefined();
+  });
+
   it("lets a shared-secret owner without a login read status and start My GitHub authorization", async () => {
     const profile = ensureGatewayOwnerProfile("Gateway Owner");
     delete alice.authenticatedUserId;

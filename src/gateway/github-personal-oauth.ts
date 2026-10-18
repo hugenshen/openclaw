@@ -553,16 +553,18 @@ export function createPersonalGitHubOAuthLifecycle() {
       requestId: string,
     ): Promise<UsersGitHubAuthorizePollResult> {
       guard(action);
+      // Normalize only the caller id; stored pending.requestId stays canonical.
+      const normalizedRequestId = requestId.trim();
       const current = await readUserGitHubConnectionAsync(action.owner);
       guard(action);
-      if (current?.pending?.requestId !== requestId) {
+      if (current?.pending?.requestId !== normalizedRequestId) {
         return { status: "expired" };
       }
-      const key = `${action.owner}\0${requestId}`;
+      const key = `${action.owner}\0${normalizedRequestId}`;
       const result = await getOrCreatePromise(
         polls,
         key,
-        () => pollOnce(action, current, requestId),
+        () => pollOnce(action, current, normalizedRequestId),
         { evictOnSettled: true },
       );
       guard(action);
@@ -571,7 +573,7 @@ export function createPersonalGitHubOAuthLifecycle() {
     /** @deprecated Use cancelAuthorizationAsync; final compatibility day: 2026-12-31; removal in the first January 2027 stable release. */
     cancelAuthorization(action: PersonalGitHubAction, requestId: string): boolean {
       warnGitHubPublicationDeprecation("personal.cancelAuthorization");
-      return cancelUserGitHubAuthorizationSync(action.owner, requestId, () => guard(action));
+      return cancelUserGitHubAuthorizationSync(action.owner, requestId.trim(), () => guard(action));
     },
     async cancelAuthorizationAsync(
       action: PersonalGitHubAction,
@@ -579,8 +581,10 @@ export function createPersonalGitHubOAuthLifecycle() {
     ): Promise<boolean> {
       guard(action);
       return Boolean(
-        await mutateUserGitHubConnection(action.owner, { kind: "cancel", requestId }, () =>
-          guard(action),
+        await mutateUserGitHubConnection(
+          action.owner,
+          { kind: "cancel", requestId: requestId.trim() },
+          () => guard(action),
         ),
       );
     },

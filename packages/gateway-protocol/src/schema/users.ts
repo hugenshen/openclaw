@@ -409,11 +409,12 @@ export const UsersGitHubAuthorizeStartResultSchema = closedObject({
   expiresInMs: Type.Integer({ minimum: 0, maximum: 900000 }),
   pollAfterMs: Type.Integer({ minimum: 1, maximum: 60000 }),
 });
+// Clipboard/UI padding must reach the handler; poll/cancel trim before compare.
 export const UsersGitHubAuthorizePollParamsSchema = closedObject({
-  requestId: PersonalGitHubGenerationSchema,
+  requestId: NonEmptyString,
 });
 export const UsersGitHubAuthorizeCancelParamsSchema = closedObject({
-  requestId: PersonalGitHubGenerationSchema,
+  requestId: NonEmptyString,
 });
 export const UsersGitHubAuthorizeCancelResultSchema = closedObject({ cancelled: Type.Boolean() });
 export const UsersGitHubDisconnectParamsSchema = closedObject({});

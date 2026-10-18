@@ -74,7 +74,8 @@ export const usersGitHubHandlers: GatewayRequestHandlers = {
     validateUsersGitHubAuthorizePollParams,
     (options) =>
       runPersonalGitHub(options, "My GitHub authorization failed.", (action, service) =>
-        service.pollAuthorization(action, options.params.requestId),
+        // Match device.pair / gateway.suspend: clipboard padding must not miss pending.
+        service.pollAuthorization(action, options.params.requestId.trim()),
       ),
   ),
   "users.github.authorize.cancel": defineValidatedGatewayMethod(
@@ -82,7 +83,10 @@ export const usersGitHubHandlers: GatewayRequestHandlers = {
     validateUsersGitHubAuthorizeCancelParams,
     (options) =>
       runPersonalGitHub(options, "My GitHub authorization failed.", async (action, service) => ({
-        cancelled: await service.cancelAuthorizationAsync(action, options.params.requestId),
+        cancelled: await service.cancelAuthorizationAsync(
+          action,
+          options.params.requestId.trim(),
+        ),
       })),
   ),
   "users.github.disconnect": defineValidatedGatewayMethod(

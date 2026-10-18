@@ -1,12 +1,13 @@
-// Real Gateway proof for clipboard-padded tools.github authorization ids.
-// Seeds a local pending device record, then polls and cancels it over a real
-// Gateway WebSocket. A future nextPollAtMs keeps the poll on that record.
-// Run: node --import ./scripts/tsx.mjs scripts/proof-tools-github-authorize-requestid-standalone.mts
 import { randomBytes, randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
+// Real Gateway proof for clipboard-padded tools.github authorization ids.
+// Seeds a local pending device record, then polls and cancels it over a real
+// Gateway WebSocket. A future nextPollAtMs keeps the poll on that record.
+// Run: node --import ./scripts/tsx.mjs scripts/proof-tools-github-authorize-requestid-standalone.mts
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import {
   writeGitHubDeviceAuthorizationRecord,
   type GitHubDeviceAuthorizationRecord,
@@ -55,10 +56,6 @@ function redact(text: string): string {
   return text
     .replace(/github-device-[a-f0-9]{32}/giu, "[request-id]")
     .replace(/\b[A-Za-z0-9_-]{40}\b/gu, "[redacted]");
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function readPoll(value: unknown): PollPayload {

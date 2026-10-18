@@ -1,3 +1,4 @@
+import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import { racePromiseWithAbortSignal } from "../infra/abort-signal.js";
 import { openLocalFileSafely, readLocalFileSafely } from "../infra/fs-safe.js";
 import { readCodeModeSkill, type CodeModeSkill } from "./code-mode-skills.js";
@@ -17,6 +18,12 @@ export type InstalledSkill = CodeModeSkill & {
 const MAX_QUERY_CHARS = 1_000;
 const MAX_RESULTS = 20;
 const MAX_DESCRIPTION_CHARS = 512;
+
+export function boundInstalledSkillDescription(description: string): string {
+  // The cap is display width. String.slice keeps a lone surrogate when an
+  // emoji sits on the 512-unit boundary, and that half is returned to the model.
+  return truncateUtf16Safe(description, MAX_DESCRIPTION_CHARS);
+}
 const MAX_RESULT_CHARS = 16_000;
 export const MAX_SKILL_INSTRUCTION_BYTES = 256 * 1024;
 const MAX_BODY_SKILLS = 1_024;
@@ -221,7 +228,7 @@ export async function searchInstalledSkills(
   for (const { value } of ranked.slice(0, limit)) {
     const result = {
       name: value.name,
-      description: value.description.slice(0, MAX_DESCRIPTION_CHARS),
+      description: boundInstalledSkillDescription(value.description),
       location: value.location,
     };
     chars += JSON.stringify(result).length;

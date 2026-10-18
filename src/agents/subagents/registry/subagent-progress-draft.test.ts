@@ -189,6 +189,22 @@ it.each([
   expectNoChildResultPushed(draft);
 });
 
+it("truncates progress titles without splitting a surrogate pair at the 120-unit bound", async () => {
+  // 119 ASCII units put the emoji's high surrogate at index 119; a raw .slice(0, 120)
+  // would leave a dangling high surrogate.
+  const label = `${"a".repeat(119)}\u{1F600}tail`;
+  const spawns = await yieldCohort("parent-turn", ["a"], undefined, { a: label });
+  const draft = newDraft();
+  expect(adoptSubagentProgressDraft(spawns, draft)).toBe(true);
+
+  const title = draft.push.mock.calls
+    .map(([item]) => item)
+    .find((item) => item?.kind === "subagent" && item.itemId === "a")?.title;
+  expect(title).toBe("a".repeat(119));
+  expect(title).not.toMatch(/[\uD800-\uDBFF]$/);
+  expect(title).toBe(title?.toWellFormed());
+});
+
 it("does not adopt a card for a cohort whose completion was already delivered", async () => {
   const spawns = await yieldCohort("parent-turn", ["a", "b"]);
   answerWakes(newDraft(), ["The delegated work is done."]);

@@ -25,6 +25,22 @@ const cliInvocation = distEntry
       args: ["--import", "./scripts/tsx.mjs", "src/entry.ts"],
     };
 
+function stripAnsi(text) {
+  const escape = String.fromCharCode(0x1b);
+  let out = "";
+  for (let index = 0; index < text.length; index += 1) {
+    if (text[index] === escape && text[index + 1] === "[") {
+      index += 2;
+      while (index < text.length && text[index] !== "m") {
+        index += 1;
+      }
+      continue;
+    }
+    out += text[index];
+  }
+  return out;
+}
+
 function redact(text, secrets) {
   let redacted = text;
   for (const secret of secrets) {
@@ -32,7 +48,23 @@ function redact(text, secrets) {
       redacted = redacted.replaceAll(secret, "<redacted>");
     }
   }
-  return redacted.replace(/\u001b\[[0-9;]*m/g, "");
+  return stripAnsi(redacted);
+}
+
+function messageText(data) {
+  if (typeof data === "string") {
+    return data;
+  }
+  if (Buffer.isBuffer(data)) {
+    return data.toString("utf8");
+  }
+  if (Array.isArray(data)) {
+    return Buffer.concat(data.filter((part) => Buffer.isBuffer(part))).toString("utf8");
+  }
+  if (data instanceof ArrayBuffer) {
+    return Buffer.from(data).toString("utf8");
+  }
+  return "";
 }
 
 function publicWakeParams(params) {
@@ -68,7 +100,7 @@ function startRecorder() {
     socket.on("message", (data) => {
       let request;
       try {
-        request = JSON.parse(data.toString());
+        request = JSON.parse(messageText(data));
       } catch {
         return;
       }
@@ -76,8 +108,7 @@ function startRecorder() {
         return;
       }
       const method = typeof request.method === "string" ? request.method : "";
-      const params =
-        request.params && typeof request.params === "object" ? request.params : {};
+      const params = request.params && typeof request.params === "object" ? request.params : {};
       calls.push({
         kind: "rpc",
         method,

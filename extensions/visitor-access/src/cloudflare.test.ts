@@ -1,3 +1,4 @@
+import { oversizedJsonResponse } from "openclaw/plugin-sdk/test-fixtures";
 import { describe, expect, it, vi } from "vitest";
 import { VisitorPolicyClient } from "./cloudflare.js";
 import type { VisitorAccessConfig } from "./config.js";
@@ -252,6 +253,20 @@ describe("VisitorPolicyClient", () => {
       expect(options?.signal).toBeInstanceOf(AbortSignal);
     },
   );
+
+  it("bounds oversized Cloudflare JSON responses and cancels the stream", async () => {
+    // 32 MiB advertised body — double the shared readProviderJsonResponse 16 MiB cap.
+    const streamed = oversizedJsonResponse({ chunkCount: 32, chunkSize: 1024 * 1024 });
+    const jsonSpy = vi.spyOn(streamed.response, "json").mockRejectedValue(new Error("unbounded"));
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(streamed.response);
+
+    await expect(new VisitorPolicyClient(config, fetcher).read()).rejects.toBeInstanceOf(
+      VisitorAccessError,
+    );
+    expect(streamed.wasCanceled()).toBe(true);
+    expect(streamed.getReadCount()).toBeLessThan(32);
+    expect(jsonSpy).not.toHaveBeenCalled();
+  });
 
   it("fences an obsolete service before the durable callback runs", async () => {
     const abort = new AbortController();

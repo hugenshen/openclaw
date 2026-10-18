@@ -1,4 +1,5 @@
 /** Validate guest JavaScript before execution. */
+import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import { parseCodeModeScriptSyntax } from "./code-mode-script-syntax.js";
 import {
   CODE_MODE_SHELL_SOURCE_ERROR,
@@ -56,7 +57,9 @@ export function prepareSource(code: string): string {
   }
   if (!parsed.ok) {
     // Keep parser text bounded: some diagnostics include a user-sized identifier.
-    const message = parsed.message.slice(0, 240);
+    // The cap is display width. String.slice keeps a lone surrogate when that
+    // identifier's last character sits on the 240-unit boundary.
+    const message = truncateUtf16Safe(parsed.message, 240);
     throw new ToolInputError(
       `SyntaxError at openclaw-code-mode:user.js:${parsed.line}:${parsed.column + 1}: ${message}. No tools were dispatched; correct the JavaScript source and submit it again.`,
     );

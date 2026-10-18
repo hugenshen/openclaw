@@ -277,7 +277,8 @@ export const toolsGitHubHandlers: GatewayRequestHandlers = {
       if (!service) {
         throw new Error("GitHub authorization lifecycle is unavailable.");
       }
-      respond(true, await service.pollAuthorization(params.requestId));
+      const requestId = params.requestId.trim();
+      respond(true, await service.pollAuthorization(requestId));
     },
     () => errorShape(ErrorCodes.UNAVAILABLE, "GitHub authorization polling failed"),
   ),
@@ -294,7 +295,8 @@ export const toolsGitHubHandlers: GatewayRequestHandlers = {
         );
         return;
       }
-      respond(true, { cancelled: await service.cancelAuthorizationAsync(params.requestId) });
+      const requestId = params.requestId.trim();
+      respond(true, { cancelled: await service.cancelAuthorizationAsync(requestId) });
     },
   ),
 };

@@ -304,6 +304,24 @@ describe("tools.github handlers", () => {
     expect(JSON.stringify(start.mock.calls)).not.toContain("access_token");
   });
 
+  it("polls and cancels clipboard-padded request ids the same as unpadded", async () => {
+    const requestId = `github-device-${"3".repeat(32)}`;
+    oauth.pollAuthorization.mockResolvedValue({ status: "pending", retryAfterMs: 5_000 });
+    oauth.cancelAuthorizationAsync.mockResolvedValue(true);
+
+    const poll = await invoke("tools.github.authorize.poll", {
+      requestId: `  ${requestId}  `,
+    });
+    const cancel = await invoke("tools.github.authorize.cancel", {
+      requestId: `\n${requestId}\t`,
+    });
+
+    expect(oauth.pollAuthorization).toHaveBeenCalledWith(requestId);
+    expect(oauth.cancelAuthorizationAsync).toHaveBeenCalledWith(requestId);
+    expect(poll).toHaveBeenCalledWith(true, { status: "pending", retryAfterMs: 5_000 });
+    expect(cancel).toHaveBeenCalledWith(true, { cancelled: true });
+  });
+
   it("returns bounded authorization failures without forwarding diagnostics", async () => {
     oauth.pollAuthorization.mockRejectedValue(
       new Error("network response contained device_code=private and access_token=private"),

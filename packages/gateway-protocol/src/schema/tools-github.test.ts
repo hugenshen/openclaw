@@ -112,10 +112,15 @@ describe("GitHub tools protocol", () => {
     ).toBe(false);
   });
 
-  it("accepts only opaque authorization request ids for cancellation", () => {
+  it("accepts opaque authorization request ids for cancellation, including clipboard padding", () => {
     const params = { requestId: "github-device-22222222222222222222222222222222" };
     expect(Value.Check(ToolsGitHubAuthorizePollParamsSchema, params)).toBe(true);
     expect(Value.Check(ToolsGitHubAuthorizeCancelParamsSchema, params)).toBe(true);
+    expect(
+      Value.Check(ToolsGitHubAuthorizePollParamsSchema, {
+        requestId: `  ${params.requestId}  `,
+      }),
+    ).toBe(true);
     expect(Value.Check(ToolsGitHubAuthorizeCancelParamsSchema, { requestId: "device-code" })).toBe(
       false,
     );

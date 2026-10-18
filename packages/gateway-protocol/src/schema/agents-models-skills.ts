@@ -659,6 +659,9 @@ export const ToolsGitHubConfigureParamsSchema = Type.Union([
 const GitHubDeviceRequestIdSchema = Type.String({
   pattern: "^github-device-[a-f0-9]{32}$",
 });
+const GitHubDeviceRequestIdInputSchema = Type.String({
+  pattern: "^\\s*github-device-[a-f0-9]{32}\\s*$",
+});
 
 export const ToolsGitHubAuthorizeStartParamsSchema = closedObject({
   scope: GitHubIdentityScopeSchema,
@@ -674,7 +677,7 @@ export const ToolsGitHubAuthorizeStartResultSchema = closedObject({
 });
 
 export const ToolsGitHubAuthorizePollParamsSchema = closedObject({
-  requestId: GitHubDeviceRequestIdSchema,
+  requestId: GitHubDeviceRequestIdInputSchema,
 });
 
 export const ToolsGitHubAuthorizePendingResultSchema = closedObject({
@@ -726,7 +729,7 @@ export const ToolsGitHubAuthorizePollResultSchema = Type.Union([
 ]);
 
 export const ToolsGitHubAuthorizeCancelParamsSchema = closedObject({
-  requestId: GitHubDeviceRequestIdSchema,
+  requestId: GitHubDeviceRequestIdInputSchema,
 });
 
 export const ToolsGitHubAuthorizeCancelResultSchema = closedObject({

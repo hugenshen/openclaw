@@ -1,97 +1,184 @@
-// Shipped-entry proof for retained subagent progress titles.
+// Shipped Telegram delivery proof for retained subagent progress titles.
 // Run: node --import ./scripts/tsx.mjs scripts/subagent-progress-title-proof.ts
 //
-// projectChild truncates the child label, adoptSubagentProgressDraft pushes that
-// item, and announce holds the same card through withSubagentProgressDraft.
-// The card owner is Telegram's retained draft: createChannelProgressDraftCompositor
-// plus renderTelegramProgressDraftPreview (extensions/telegram retainProgressDraft).
-import { renderTelegramProgressDraftPreview } from "../extensions/telegram/src/progress-draft-preview.js";
-import {
-  adoptSubagentProgressDraft,
-  withSubagentProgressDraft,
-} from "../src/agents/subagents/registry/subagent-progress-draft.js";
-import { subagentRuns } from "../src/agents/subagents/registry/subagent-registry-memory.js";
-import type { SubagentRunRecord } from "../src/agents/subagents/registry/subagent-registry.types.js";
-import { createChannelProgressDraftCompositor } from "../src/channels/progress-draft-compositor.js";
-import type { ItemProgressPayload } from "../src/channels/progress-draft-events.js";
-import {
-  resolveChannelProgressDraftMaxLineChars,
-  resolveChannelProgressDraftMaxLines,
-} from "../src/channels/streaming.js";
+// The parent records Bot API sendMessage/editMessageText bodies. The child
+// calls retainProgressDraft, which is the production card owner, then
+// adoptSubagentProgressDraft. streaming.progress.maxLineChars is 400 so the
+// rendered "${title}: running" row keeps the 120-unit title. The default 120
+// compacts that row and would hide a split surrogate.
+import { spawn } from "node:child_process";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
-const RUN_ID = "boundary-title";
-const CHILD_SESSION_KEY = "agent:main:subagent:boundary-title";
-const WAKE_RUN_ID = "requester-settle-wake";
-// 119 ASCII units put the emoji's high surrogate at index 119.
-const BOUNDARY_LABEL = `${"a".repeat(119)}\u{1F600}tail`;
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const BOUNDARY_TITLE = "a".repeat(119);
+const EXPECTED_ROW = `${BOUNDARY_TITLE}: running`;
+const LINE_BUDGET = 400;
+const API_TOKEN = "123456:progress-title-proof";
 
-function hasUnpairedSurrogate(value: string): boolean {
-  return !value.isWellFormed();
+function requestText(request: IncomingMessage): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    request.on("data", (chunk: Buffer) => chunks.push(chunk));
+    request.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+    request.on("error", reject);
+  });
 }
 
-function visibleCardLines(markup: string): string[] {
-  return markup
-    .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<[^>]+>/g, "")
-    .replaceAll("&amp;", "&")
-    .replaceAll("&lt;", "<")
-    .replaceAll("&gt;", ">")
-    .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0);
+function deliveredText(raw: string, contentType: string): string | undefined {
+  if (contentType.includes("json")) {
+    const body: unknown = JSON.parse(raw);
+    if (typeof body === "object" && body !== null && "text" in body) {
+      const text = body.text;
+      return typeof text === "string" ? text : undefined;
+    }
+    return undefined;
+  }
+  return new URLSearchParams(raw).get("text") ?? undefined;
 }
 
-function createRetainedTelegramCard() {
-  let previewText = "";
-  const compositor = createChannelProgressDraftCompositor({
+function telegramOk(response: ServerResponse, text: string | undefined): void {
+  response.writeHead(200, { "content-type": "application/json" });
+  response.end(
+    JSON.stringify({
+      ok: true,
+      result: {
+        message_id: 42,
+        date: 1_700_000_000,
+        chat: { id: 123, type: "private" },
+        ...(text === undefined ? {} : { text }),
+      },
+    }),
+  );
+}
+
+async function recordDelivery(): Promise<void> {
+  const deliveries: string[] = [];
+  const server = createServer((request, response) => {
+    void (async () => {
+      const raw = await requestText(request);
+      const method = request.url?.split("/").at(-1) ?? "";
+      const text = deliveredText(raw, request.headers["content-type"] ?? "");
+      if ((method === "sendMessage" || method === "editMessageText") && text) {
+        deliveries.push(text);
+      }
+      telegramOk(response, text);
+    })().catch((error: unknown) => {
+      response.writeHead(500);
+      response.end();
+      console.error(error instanceof Error ? error.message : "loopback failed");
+    });
+  });
+  await new Promise<void>((resolve) => {
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  if (!address || typeof address === "string") {
+    throw new Error("loopback listener did not bind");
+  }
+  const apiRoot = `http://127.0.0.1:${address.port}`;
+  const child = spawn(
+    process.execPath,
+    ["--import", "./scripts/tsx.mjs", "scripts/subagent-progress-title-proof.ts"],
+    {
+      cwd: ROOT,
+      env: {
+        ...process.env,
+        PROGRESS_TITLE_PROOF_CHILD: "1",
+        PROGRESS_TITLE_PROOF_API_ROOT: apiRoot,
+      },
+      stdio: "inherit",
+    },
+  );
+  const exitCode = await new Promise<number>((resolve, reject) => {
+    child.once("error", reject);
+    child.once("exit", (code) => resolve(code ?? 1));
+  });
+  await new Promise<void>((resolve) => {
+    server.close(() => resolve());
+  });
+  const text = deliveries.find((entry) => entry.includes(BOUNDARY_TITLE));
+  const wellFormed = text?.isWellFormed() ?? false;
+  const keptBoundary = text?.includes(EXPECTED_ROW) ?? false;
+  console.log(
+    `[subagent-progress title proof] deliveries=${deliveries.length} well_formed=${wellFormed} kept_boundary=${keptBoundary} line_budget=${LINE_BUDGET}`,
+  );
+  if (text) {
+    console.log(`[subagent-progress title proof] text=${JSON.stringify(text)}`);
+  }
+  if (exitCode !== 0 || !text || !wellFormed || !keptBoundary) {
+    throw new Error("retained Telegram card did not deliver the UTF-16-safe title");
+  }
+}
+
+async function deliverRetainedCard(): Promise<void> {
+  const apiRoot = process.env.PROGRESS_TITLE_PROOF_API_ROOT;
+  if (!apiRoot) {
+    throw new Error("missing loopback API root");
+  }
+  const { Bot } = await import("grammy");
+  const { createTelegramDraftStream } = await import("../extensions/telegram/src/draft-stream.js");
+  const { retainProgressDraft } =
+    await import("../extensions/telegram/src/bot-message-dispatch-progress.js");
+  const { createChannelProgressDraftCompositor } =
+    await import("../src/channels/progress-draft-compositor.js");
+  const { adoptSubagentProgressDraft } =
+    await import("../src/agents/subagents/registry/subagent-progress-draft.js");
+  const { subagentRuns } =
+    await import("../src/agents/subagents/registry/subagent-registry-memory.js");
+  type SubagentRunRecord =
+    import("../src/agents/subagents/registry/subagent-registry.types.js").SubagentRunRecord;
+  type TelegramDispatchTurn =
+    import("../extensions/telegram/src/bot-message-dispatch.types.js").TelegramDispatchTurn;
+
+  const label = `${BOUNDARY_TITLE}\u{1F600}tail`;
+  if (label.charCodeAt(119) < 0xd800 || label.charCodeAt(119) > 0xdbff) {
+    throw new Error("boundary label does not place a high surrogate at UTF-16 index 119");
+  }
+  const telegramCfg = {
+    streaming: { mode: "progress", progress: { maxLineChars: LINE_BUDGET, maxLines: 8 } },
+  };
+  const progressCompositor = createChannelProgressDraftCompositor({
     preparedItems: true,
     showWorkStatus: true,
-    entry: undefined,
+    entry: telegramCfg,
     mode: "progress",
     active: true,
     seed: "subagent-progress-title-proof",
     reasoningGate: false,
     toolIcons: true,
     updateOnLineChange: true,
-    update: (_text, options) => {
-      previewText = renderTelegramProgressDraftPreview(options.snapshot, {
-        toolProgress: compositor.previewToolProgressEnabled,
-        richMessages: false,
-        maxLines: resolveChannelProgressDraftMaxLines(undefined),
-        maxLineChars: resolveChannelProgressDraftMaxLineChars(undefined),
-      }).text;
-    },
+    update: () => undefined,
   });
-  // retainProgressDraft starts the card, then applies the owner's pushes.
-  let queue: Promise<unknown> = compositor.start();
-  const draft = {
-    push: (item: ItemProgressPayload) => {
-      queue = queue.then(() => compositor.pushItemEvent(item));
+  const turn = {
+    telegramCfg,
+    richMessages: false,
+    context: {
+      chatId: 123,
+      route: { accountId: "proof" },
+      threadSpec: {},
     },
-    retire: () => {
-      queue = queue.then(async () => {
-        compositor.cancel();
-      });
-    },
-  };
-  return {
-    draft,
-    flushed: () => queue,
-    previewText: () => previewText,
-  };
-}
-
-function yieldedBoundaryRun(): SubagentRunRecord {
+    progressCompositor,
+    runtime: {},
+  } as TelegramDispatchTurn;
+  const stream = createTelegramDraftStream({
+    api: new Bot(API_TOKEN, { client: { apiRoot } }).api,
+    chatId: 123,
+    throttleMs: 250,
+    richMessages: false,
+  });
+  const card = retainProgressDraft(turn, stream);
   const startedAt = Date.now();
-  return {
-    runId: RUN_ID,
-    childSessionKey: CHILD_SESSION_KEY,
+  const entry: SubagentRunRecord = {
+    runId: "boundary-title",
+    childSessionKey: "agent:main:subagent:boundary-title",
     childAgentId: "main",
     requesterSessionKey: "agent:main:main",
     requesterAgentId: "main",
     requesterDisplayKey: "main",
     task: "boundary title",
-    label: BOUNDARY_LABEL,
+    label,
     cleanup: "keep",
     createdAt: startedAt,
     expectsCompletionMessage: true,
@@ -100,27 +187,7 @@ function yieldedBoundaryRun(): SubagentRunRecord {
     execution: { status: "running", startedAt },
     requesterSettleWake: { status: "pending", attemptCount: 0 },
   };
-}
-
-function renderedChildTitle(card: ReturnType<typeof createRetainedTelegramCard>): string {
-  const prefix = "a".repeat(119);
-  const fromPreview = visibleCardLines(card.previewText()).find((line) => line.includes(prefix));
-  if (!fromPreview) {
-    throw new Error(
-      `retained card did not render the boundary title: ${JSON.stringify(card.previewText())}`,
-    );
-  }
-  return fromPreview;
-}
-
-async function main(): Promise<void> {
-  const high = BOUNDARY_LABEL.charCodeAt(119);
-  if (high < 0xd800 || high > 0xdbff) {
-    throw new Error("boundary label does not place a high surrogate at UTF-16 index 119");
-  }
-  const entry = yieldedBoundaryRun();
   subagentRuns.set(entry.runId, entry);
-  const card = createRetainedTelegramCard();
   try {
     const adopted = adoptSubagentProgressDraft(
       [
@@ -130,30 +197,31 @@ async function main(): Promise<void> {
           expectsCompletionMessage: true,
         },
       ],
-      card.draft,
+      card,
     );
     if (!adopted) {
       throw new Error("adoptSubagentProgressDraft did not retain the progress card");
     }
-    await card.flushed();
-    // Announce keeps this card for the requester settle wake.
-    await withSubagentProgressDraft([entry], WAKE_RUN_ID, async () => {
-      await card.flushed();
-    });
-    await card.flushed();
-    const title = renderedChildTitle(card);
-    const unpaired = hasUnpairedSurrogate(title);
-    console.log(
-      `[subagent-progress title proof] title_len=${title.length} unpaired=${unpaired} title=${title}`,
-    );
-    if (unpaired || !title.startsWith("a".repeat(119))) {
-      throw new Error("rendered progress title still contains a broken boundary");
+    const deadline = Date.now() + 15_000;
+    while (Date.now() < deadline) {
+      await stream.flush();
+      if (stream.lastDeliveredText()?.includes(EXPECTED_ROW)) {
+        return;
+      }
+      await new Promise((resolve) => {
+        setTimeout(resolve, 200);
+      });
     }
+    throw new Error(
+      `Telegram did not deliver the boundary row: ${JSON.stringify(stream.lastDeliveredText() ?? "")}`,
+    );
   } finally {
-    card.draft.retire();
-    await card.flushed();
     subagentRuns.delete(entry.runId);
   }
 }
 
-await main();
+if (process.env.PROGRESS_TITLE_PROOF_CHILD === "1") {
+  await deliverRetainedCard();
+} else {
+  await recordDelivery();
+}

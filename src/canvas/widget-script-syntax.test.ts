@@ -211,4 +211,11 @@ describe("widget script syntax", () => {
     const widgetCode = `<script>const = ${"x".repeat(1_000)}</script>`;
     expect(findWidgetScriptSyntaxError(widgetCode)?.snippet).toBe(widgetCode.slice(0, 160));
   });
+
+  it("keeps an emoji whole when the offending line hits the snippet cap", () => {
+    const prefix = `<script>${"a".repeat(151)}`;
+    const widgetCode = `${prefix}😀 const =</script>`;
+    expect(prefix).toHaveLength(159);
+    expect(findWidgetScriptSyntaxError(widgetCode)?.snippet).toBe(prefix);
+  });
 });

@@ -21,7 +21,7 @@ import {
   readAgentRunTerminalOutcome,
   recordAgentRunTerminalOutcome,
 } from "./agent-run-terminal-outcome.js";
-import { hasVisibleChannelTurnDispatchFromReceipt as hasVisibleChannelTurnDispatch } from "./dispatch-result.js";
+import { hasVisibleChannelTurnDispatch } from "./dispatch-result.js";
 import { dispatchAssembledChannelTurn, dispatchRoutedChannelTurn } from "./lifecycle.js";
 import {
   createCtx,
@@ -214,6 +214,8 @@ describe("channel turn delivery", () => {
       2,
       { kind: "pending-final", ...completion },
       "delivered",
+      undefined,
+      undefined,
     );
   });
 
@@ -259,6 +261,8 @@ describe("channel turn delivery", () => {
       expect(settlePendingFinalDelivery).toHaveBeenLastCalledWith(
         { kind: "pending-final", ...completion },
         "unknown",
+        undefined,
+        undefined,
       );
       expect(settlePendingFinalDelivery.mock.calls.map(([, state]) => state)).toEqual([
         "unknown",

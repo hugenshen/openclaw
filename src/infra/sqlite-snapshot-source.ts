@@ -3,7 +3,11 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import fs, { type BigIntStats } from "node:fs";
 import path from "node:path";
 import { coerceErrorMessage } from "@openclaw/normalization-core/error-coercion";
-import { mapRetainedOperation } from "@openclaw/worker-runtime/lifecycle";
+import {
+  createRetainedOperation,
+  mapRetainedOperation,
+  type RetainedOperation,
+} from "@openclaw/worker-runtime/lifecycle";
 import {
   artifactPreservingReads,
   isArtifactPreservingStateRead,
@@ -13,22 +17,25 @@ import { prepareSqliteSnapshotFromLiveOwner } from "./sqlite-live-snapshot.js";
 import { resolvePrivateSqliteSnapshotStagingRoot } from "./sqlite-private-directory.js";
 import {
   adoptPreparedLocation,
-  adoptRetainedPreparedLocation,
   removeTempDirectory,
   removeTempDirectoryAsync,
+  registerRetainedSnapshotTempDirectory,
   retainSnapshotTempDirectory,
   SqliteSnapshotCleanupError,
 } from "./sqlite-readonly-location-cleanup.js";
 import type {
   PreparedSqliteReadOnlyLocation,
+  AsyncPreparedSqliteReadOnlyLocation,
   RetainedSqliteSnapshotPreparation,
 } from "./sqlite-readonly-location.types.js";
 import {
   resolveSqliteInspectionSignal,
   captureSqliteReadOnlyWorkerLaunch,
+  createScopedSqliteReadOnlyWorker,
   isSqliteInspectionDeadlineOwnedByCaller,
   runSqliteReadOnlyWorker,
   runSqliteReadOnlyWorkerSync,
+  runSqliteReadOnlyWorkerOnce,
 } from "./sqlite-readonly-worker.js";
 import {
   prepareSingleFlightSqliteSnapshot,
@@ -88,6 +95,8 @@ export async function prepareSqliteReadOnlyLocation(
     signal?: AbortSignal;
     /** A dedicated reader pins its transaction without borrowing a live writer's connection. */
     allowLiveOwner?: boolean;
+    /** Throw removal failures with their cause instead of warning; a caller signal implies it. */
+    requireCleanup?: boolean;
   } = {},
 ): Promise<PreparedSqliteReadOnlyLocation> {
   const signal = resolveSqliteInspectionSignal(options.signal);
@@ -160,7 +169,7 @@ export function startSqliteReadOnlyLocationAsync(
                 "SQLite snapshot producer returned an allocation without its prepared location",
               );
             }
-            return adoptRetainedPreparedLocation(reply.location, reply.directory, requireCleanup);
+            return adoptPreparedLocation(reply.location, reply.directory, requireCleanup);
           }),
           startClose: () => task.startClose(),
         };
@@ -170,15 +179,151 @@ export function startSqliteReadOnlyLocationAsync(
   );
 }
 
+/** Metadata selects live backup in a one-shot child; strict snapshots retain their raw-copy child. */
+export async function prepareSqliteReadOnlyLocationAwaited(
+  inputPathname: string,
+  options: {
+    signal: AbortSignal;
+    expectedSourceIdentity: DatabaseFileIdentity;
+    allowLiveOwner?: boolean;
+  },
+): Promise<AsyncPreparedSqliteReadOnlyLocation> {
+  const signal = resolveSqliteInspectionSignal(options.signal);
+  const pathname = path.resolve(inputPathname);
+  const expectedSourceIdentity = readDatabaseFileIdentity(options.expectedSourceIdentity);
+  return prepareSingleFlightSqliteSnapshot(
+    pathname,
+    `worker-${options.allowLiveOwner ? "metadata" : "sync"}:strict:awaited-token:${JSON.stringify(expectedSourceIdentity)}`,
+    (flightSignal, recordCleanupFailure) =>
+      prepareAwaitedWorkerSnapshot(
+        pathname,
+        { signal: flightSignal, expectedSourceIdentity, allowLiveOwner: options.allowLiveOwner },
+        recordCleanupFailure,
+      ),
+    signal,
+  );
+}
+
+async function prepareAwaitedWorkerSnapshot(
+  pathname: string,
+  options: {
+    signal: AbortSignal;
+    expectedSourceIdentity: DatabaseFileIdentity;
+    allowLiveOwner?: boolean;
+  },
+  recordCleanupFailure: (error: unknown) => void,
+): Promise<PreparedSqliteReadOnlyLocation> {
+  return useAwaitedSnapshotWorker(
+    options.signal,
+    recordCleanupFailure,
+    async (worker, directory) => {
+      const request = {
+        mode: options.allowLiveOwner ? ("metadata" as const) : ("sync" as const),
+        stagingRoot: directory,
+        expectedSourceIdentity: options.expectedSourceIdentity,
+        signal: options.signal,
+      };
+      // Native backup completion must not share the staging owner's persistent IPC session.
+      const location = options.allowLiveOwner
+        ? await runSqliteReadOnlyWorkerOnce(pathname, request)
+        : await worker.run(pathname, request);
+      if (typeof location !== "string") {
+        throw new Error("SQLite snapshot preparation returned an invalid location");
+      }
+      options.signal.throwIfAborted();
+      return adoptPreparedLocation(location, directory, true);
+    },
+  );
+}
+
+async function useAwaitedSnapshotWorker<T>(
+  signal: AbortSignal,
+  recordCleanupFailure: ((error: unknown) => void) | undefined,
+  inspect: (
+    worker: ReturnType<typeof createScopedSqliteReadOnlyWorker>,
+    directory: string,
+  ) => Promise<T>,
+): Promise<T> {
+  signal.throwIfAborted();
+  const launch = captureSqliteReadOnlyWorkerLaunch();
+  let worker = createScopedSqliteReadOnlyWorker({ ...launch, retainOnOperationError: true });
+  let directory: string | undefined;
+  let retirement: RetainedOperation<void> | undefined;
+  const retire = (): RetainedOperation<void> => {
+    if (retirement && retirement.read().status !== "rejected") {
+      return retirement;
+    }
+    const completion = createRetainedOperation<void>(() => {});
+    retirement = completion.operation;
+    void (async () => {
+      if (directory) {
+        // A failed copy may have retired its child; recovery still runs outside the host.
+        const recover = worker.isRetired();
+        if (recover) {
+          await worker.close();
+          worker = createScopedSqliteReadOnlyWorker(launch);
+        }
+        await worker.run(directory, { mode: recover ? "staging-reconcile" : "staging-retire" });
+      }
+      await worker.close();
+      await worker.closed;
+      if (directory) {
+        await fs.promises.rm(directory, {
+          recursive: true,
+          force: true,
+          maxRetries: 3,
+          retryDelay: 20,
+        });
+      }
+    })().then(completion.resolve, completion.reject);
+    return retirement;
+  };
+  try {
+    const allocated = await worker.run(resolvePrivateSqliteSnapshotStagingRoot(), {
+      mode: "staging-create",
+      signal,
+    });
+    if (typeof allocated !== "string") {
+      throw new Error("SQLite snapshot allocation returned an invalid directory");
+    }
+    directory = allocated;
+    registerRetainedSnapshotTempDirectory(directory, retire);
+    signal.throwIfAborted();
+    const value = await inspect(worker, directory);
+    signal.throwIfAborted();
+    return value;
+  } catch (error) {
+    try {
+      if (directory) {
+        if (!(await removeTempDirectoryAsync(directory))) {
+          throw new SqliteSnapshotCleanupError(`SQLite snapshot cleanup failed: ${directory}`);
+        }
+      } else {
+        await worker.close();
+        await worker.closed;
+      }
+    } catch (cleanupError) {
+      const failure = new AggregateError(
+        [error, cleanupError],
+        "SQLite snapshot preparation and cleanup failed",
+      );
+      recordCleanupFailure?.(failure);
+      throw failure;
+    }
+    throw error;
+  }
+}
+
 function prepareWorkerSnapshot(
   pathname: string,
-  options: { preserveSourceArtifacts?: boolean; signal?: AbortSignal },
+  options: { preserveSourceArtifacts?: boolean; signal?: AbortSignal; requireCleanup?: boolean },
   signal: AbortSignal | undefined,
 ): Promise<PreparedSqliteReadOnlyLocation> {
   signal?.throwIfAborted();
+  const requireCleanup = options.requireCleanup ?? options.signal !== undefined;
   return prepareSingleFlightSqliteSnapshot(
     pathname,
-    `${options.preserveSourceArtifacts ? "worker-sync" : "worker-async"}:${options.signal ? "strict" : "best-effort"}:sync-token`,
+    `${options.preserveSourceArtifacts ? "worker-sync" : "worker-async"}:${requireCleanup ? "strict" : "best-effort"}:sync-token`,
     async (flightSignal, recordCleanupFailure) => {
       let stagingRoot: string | undefined;
       try {
@@ -191,14 +336,14 @@ function prepareWorkerSnapshot(
           stagingRoot,
         });
         flightSignal.throwIfAborted();
-        return adoptPreparedLocation(location, stagingRoot, options.signal !== undefined);
+        return adoptPreparedLocation(location, stagingRoot, requireCleanup);
       } catch (error) {
         if (stagingRoot && !(await removeTempDirectoryAsync(stagingRoot))) {
           const failure = new SqliteSnapshotCleanupError(
             `${coerceErrorMessage(error)}; SQLite snapshot cleanup failed: ${stagingRoot}`,
             { cause: error },
           );
-          recordCleanupFailure(failure);
+          recordCleanupFailure?.(failure);
           throw failure;
         }
         if (error instanceof SqliteSnapshotCleanupError) {

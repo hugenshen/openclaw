@@ -5,6 +5,7 @@ import { withSessionPendingInputAuthorityGuard } from "../../config/sessions/ses
 import {
   captureExternalSessionCommitGuard,
   composeSessionSourceAssertion,
+  type SessionSourceAssertion,
 } from "../../config/sessions/session-source-authority.js";
 import { isGatewayWorkerApprovalMethod } from "../../infra/approval-gateway-runtime-methods.js";
 import { operatorScopeSatisfied } from "../../shared/operator-scope-compat.js";
@@ -18,6 +19,7 @@ import {
   retainGatewayDeviceRevocation,
 } from "../device-revocation.js";
 import type { ExpectedProfileBinding } from "../expected-profile.js";
+import { assertRemoteControlUiIngressCurrent } from "../ingress-attribution.js";
 import { isInternalApprovalCommitGuard } from "../internal-approval-authority.js";
 import {
   authorizeCurrentOperatorRoleScopes,
@@ -119,7 +121,7 @@ function captureRequestMutationOptions(options: GatewayRequestOptions, client = 
   return { req, client, signal, hasCurrentClientAuthority, sessionMutationCommitGuard };
 }
 
-/** Opaque SDK guards retain their synchronous commit boundary from v2026.9.4. */
+/** Unbound requests retain native authority; dispatch owners explicitly prepare workers. */
 export function readGatewayRequestMutationAuthority(
   options: RequestMutationOptions,
 ): GatewayRequestMutationAuthority {
@@ -130,14 +132,14 @@ export function readGatewayRequestMutationAuthority(
   const { req, client, signal, hasCurrentClientAuthority, sessionMutationCommitGuard } = options;
   const captured = { req, client, signal, hasCurrentClientAuthority, sessionMutationCommitGuard };
   const assertLifetimeCurrent = captureRequestAuthorityAssertion(captured, true);
-  const compatibility: GatewayRequestMutationAuthority = {
+  const authority: GatewayRequestMutationAuthority = {
     family: "native-compatibility",
     assertPreparationCurrent: () => assertRequestTransportCurrent(captured),
     assertCurrent: assertLifetimeCurrent,
     assertLifetimeCurrent,
   };
-  bindRequestMutationAuthority(options, compatibility);
-  return compatibility;
+  bindRequestMutationAuthority(options, authority);
+  return authority;
 }
 
 /** The in-process owner separates preparation and accepted input from opaque commit callbacks. */
@@ -162,6 +164,24 @@ export function bindInProcessRequestMutationAuthority<T extends GatewayRequestOp
       assertLifetimeCurrent: assertWorkerCurrent,
       assertWorkerCurrent,
     });
+  } else {
+    const source: SessionSourceAssertion | undefined = options.sessionMutationCommitGuard;
+    if (
+      (!source || source.prepareSessionSource) &&
+      (!options.hasCurrentClientAuthority ||
+        readGatewayDeviceRevocationGuard(options.hasCurrentClientAuthority))
+    ) {
+      const captured = captureRequestMutationOptions(options);
+      const assertLifetimeCurrent = captureRequestAuthorityAssertion(captured, false);
+      bindRequestMutationAuthority(options, {
+        family: "worker",
+        assertPreparationCurrent: () => assertRequestTransportCurrent(captured),
+        assertCurrent: assertLifetimeCurrent,
+        assertLifetimeCurrent,
+        // Worker routing must retain the complete in-process guard at commit.
+        assertWorkerCurrent: assertLifetimeCurrent,
+      });
+    }
   }
   if (!assertSourceCurrent && !assertPreparationCurrent && !questionCallerRead) {
     return options;
@@ -210,6 +230,7 @@ export function bindWebSocketRequestMutationAuthority<T extends GatewayRequestOp
   const captured = captureRequestMutationOptions(options, client);
   const { signal, hasCurrentClientAuthority } = captured;
   const assertWorkerCurrent = () => {
+    assertRemoteControlUiIngressCurrent(client.remoteControlUiIngress);
     signal?.throwIfAborted();
     const acceptedSource = readAcceptedGatewayDeviceSourceAuthority(hasCurrentClientAuthority);
     if (!hasCurrentDeviceRevocation() || client.internal?.agentRuntimeIdentity) {

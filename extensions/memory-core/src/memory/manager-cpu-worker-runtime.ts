@@ -1,6 +1,7 @@
 import { resolveStateDir } from "openclaw/plugin-sdk/memory-core-host-engine-foundation";
 import { ensureSqliteLibrarySelected } from "openclaw/plugin-sdk/memory-core-host-engine-knn";
 import type { readTranscriptStatsBatchReadOnlySync } from "openclaw/plugin-sdk/memory-core-host-engine-sessions";
+import { DatabaseSearchCapabilityUnavailableError } from "openclaw/plugin-sdk/memory-core-host-engine-storage";
 import { resolveRuntimeWorkerUrl, WorkerTaskPool } from "openclaw/plugin-sdk/process-runtime";
 import type {
   MemoryOriginReadFilters,
@@ -13,13 +14,9 @@ import type {
   prepareMemoryIndexChunks,
 } from "./manager-index-preparation.js";
 import type { MemoryIndexReadCommand, MemoryIndexReadOperations } from "./manager-index-read.js";
-import type {
-  MemoryKeywordWorkerQuery,
-  MemorySearchWorkerInput,
-  MemorySearchWorkerOutput,
-  MemoryVectorWorkerQuery,
-} from "./manager-search.worker.js";
-import { assertMemoryShadowIdentity, readMemoryShadowIdentity } from "./manager-shadow-task.js";
+import type { MemoryKeywordWorkerQuery, MemoryVectorWorkerQuery } from "./manager-search-types.js";
+import type { MemorySearchWorkerInput, MemorySearchWorkerOutput } from "./manager-search.worker.js";
+import type { MemoryStatusQuery } from "./manager-status-state.js";
 const MEMORY_INDEX_WORKER_INPUT_LIMIT_BYTES = 256 * 1024 * 1024;
 
 type MemoryTranscriptStatsScope = Omit<
@@ -122,6 +119,16 @@ export async function runMemoryIndexState(target: MemoryReadTarget, signal?: Abo
   return result.state;
 }
 
+export async function runMemoryDatabaseAdmission(target: MemoryReadTarget) {
+  const result = await runRetrieval({ ...target, kind: "admission" }, {}, "database admission");
+  return result.admission;
+}
+
+export async function runMemoryStatus(target: MemoryReadTarget, query: MemoryStatusQuery) {
+  const result = await runRetrieval({ ...target, kind: "status", query }, {}, "status");
+  return result.snapshot;
+}
+
 export async function runMemoryVectorLoad(
   target: { agentId?: string; path?: string } | undefined,
   extensionPath?: string,
@@ -166,13 +173,11 @@ export async function runMemoryIndexRead<Command extends MemoryIndexReadCommand>
   target: MemoryReadTarget,
   command: Command,
 ): Promise<MemoryIndexReadOperations[Command["type"]]["output"]> {
-  const fileIdentity = readMemoryShadowIdentity(target.databasePath);
   const result = await runRetrieval(
-    { ...target, kind: "index-read", command, fileIdentity },
+    { ...target, kind: "index-read", command },
     { inputBytes: JSON.stringify(command).length * 2 },
     "index read",
   );
-  assertMemoryShadowIdentity(target.databasePath, fileIdentity);
   if (result.read.type !== command.type) {
     throw new Error("Memory index reader returned another operation");
   }
@@ -194,9 +199,12 @@ export async function runMemoryCuratedCandidates(
   );
 }
 
-export async function runMemoryPresenceInspection(databasePath: string): Promise<boolean> {
+export async function runMemoryPresenceInspection(
+  databasePath: string,
+  agentId?: string,
+): Promise<boolean> {
   const result = await runRetrieval(
-    { kind: "presence", databasePath },
+    { kind: "presence", databasePath, agentId },
     { inputBytes: databasePath.length * 2 },
     "presence",
   );
@@ -234,6 +242,12 @@ export async function runMemoryVectorFallback(
     },
     "vector",
   );
+  if (result.capabilityError) {
+    throw new DatabaseSearchCapabilityUnavailableError(
+      result.capabilityError.capability,
+      result.capabilityError.message,
+    );
+  }
   return result.rows;
 }
 

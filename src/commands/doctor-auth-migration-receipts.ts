@@ -1,9 +1,14 @@
+import { isUtf8 } from "node:buffer";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { sha256Hex } from "@openclaw/normalization-core/node-crypto";
-import { isStringRecord as isRecordOfStrings } from "@openclaw/normalization-core/record-coerce";
+import {
+  isRecord,
+  isStringRecord as isRecordOfStrings,
+} from "@openclaw/normalization-core/record-coerce";
 import { readAuthProfileJsonCellText } from "../agents/auth-profiles/sqlite-json.js";
+import { formatCliCommand } from "../cli/command-format.js";
 import { acquireFileLockSyncWithRetry } from "../infra/file-lock-sync.js";
 import {
   executeSqliteQuerySync,
@@ -20,6 +25,16 @@ import type { DB as OpenClawStateDatabase } from "../state/openclaw-state-db.gen
 import { runOpenClawStateWriteTransaction } from "../state/openclaw-state-db.js";
 
 const MIGRATION_KIND = "auth-profile-json-to-sqlite-v2";
+
+/** Refuse replacement decoding. A lone 0xFF inside a credential must not become U+FFFD. */
+export function decodeAuthProfileSourceBytes(bytes: Buffer, sourcePath: string): string {
+  if (!isUtf8(bytes)) {
+    throw new Error(
+      `legacy auth source must be valid UTF-8: ${sourcePath}. The source and existing credentials were left untouched. Restore a valid UTF-8 copy from a verified backup, then rerun ${formatCliCommand("openclaw doctor --fix")}. Do not convert the file with a lossy encoding or delete it.`,
+    );
+  }
+  return bytes.toString("utf8");
+}
 type MigrationDatabase = Pick<OpenClawStateDatabase, "migration_runs" | "migration_sources">;
 
 export type AuthProfileMigrationSourceReceipt = {
@@ -41,7 +56,7 @@ export type AuthProfileMigrationSourceReceipt = {
   env?: NodeJS.ProcessEnv;
 };
 
-export function createAuthProfileMigrationSourceReceipt(params: {
+function createAuthProfileMigrationSourceReceipt(params: {
   sourcePath: string;
   sourceBytes: Buffer;
   sourceRecordCount: number;
@@ -69,6 +84,76 @@ export function createAuthProfileMigrationSourceReceipt(params: {
     archivePath: `${sourcePath}.migrated-${stamp}-${randomUUID()}`,
     ...(params.env ? { env: params.env } : {}),
   };
+}
+
+export function prepareAuthProfileSourceReceipt(params: {
+  pathname: string;
+  targetDatabasePath: string;
+  targetTable: AuthProfileMigrationSourceReceipt["targetTable"];
+  targetStoreKey?: AuthProfileMigrationSourceReceipt["targetStoreKey"];
+  now: () => number;
+  env?: NodeJS.ProcessEnv;
+}): AuthProfileMigrationSourceReceipt {
+  const sourceBytes = fs.readFileSync(params.pathname);
+  const sourceText = decodeAuthProfileSourceBytes(sourceBytes, params.pathname);
+  let sourceRecordCount = 0;
+  try {
+    const parsed = JSON.parse(sourceText) as unknown;
+    sourceRecordCount = isRecord(parsed) ? Object.keys(parsed).length : 0;
+  } catch {
+    // The migration parser reports malformed input separately; receipts never include its bytes.
+  }
+  return createAuthProfileMigrationSourceReceipt({
+    sourcePath: params.pathname,
+    sourceBytes,
+    sourceRecordCount,
+    targetDatabasePath: params.targetDatabasePath,
+    targetTable: params.targetTable,
+    ...(params.targetStoreKey ? { targetStoreKey: params.targetStoreKey } : {}),
+    now: new Date(params.now()),
+    ...(params.env ? { env: params.env } : {}),
+  });
+}
+
+export function assertAuthProfileMigrationSourcesUnchanged(
+  sourcePaths: readonly string[],
+  receipts: readonly AuthProfileMigrationSourceReceipt[],
+): void {
+  const receiptByPath = new Map(receipts.map((receipt) => [receipt.sourcePath, receipt]));
+  for (const pathname of new Set([
+    ...sourcePaths,
+    ...receipts.map((receipt) => receipt.sourcePath),
+  ])) {
+    const receipt = receiptByPath.get(path.resolve(pathname));
+    if (fs.existsSync(pathname) !== Boolean(receipt)) {
+      throw new Error("legacy auth source set changed during migration; retry Doctor");
+    }
+    if (!receipt) {
+      continue;
+    }
+    const currentSha256 = sha256Hex(fs.readFileSync(pathname));
+    if (currentSha256 !== receipt.sourceSha256) {
+      throw new Error("legacy auth source changed during migration; retry Doctor");
+    }
+  }
+}
+
+export function parseAuthProfileMigrationSource(
+  receipt: AuthProfileMigrationSourceReceipt | undefined,
+): unknown {
+  if (!receipt?.sourceBytes) {
+    return null;
+  }
+  try {
+    return JSON.parse(
+      decodeAuthProfileSourceBytes(receipt.sourceBytes, receipt.sourcePath),
+    ) as unknown;
+  } catch (error) {
+    if (error instanceof Error && error.message.includes("must be valid UTF-8")) {
+      throw error;
+    }
+    return null;
+  }
 }
 
 function reportJson(receipt: AuthProfileMigrationSourceReceipt): string {

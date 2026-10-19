@@ -2,6 +2,7 @@ import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { listAgentIds, resolveAgentConfig } from "openclaw/plugin-sdk/agent-scope-runtime";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
+import { sendJsonNoStore as writeJsonResponse } from "openclaw/plugin-sdk/http-response-runtime";
 import { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { boundedJsonUtf8Bytes } from "openclaw/plugin-sdk/text-utility-runtime";
 import {
@@ -51,17 +52,6 @@ type A2aHttpHandlerParams = {
   dispatchInbound: (message: A2aInboundDispatch) => Promise<void>;
 };
 
-function writeJsonResponse(response: ServerResponse, statusCode: number, value: unknown): void {
-  writeJsonBody(response, statusCode, JSON.stringify(value));
-}
-
-function writeJsonBody(response: ServerResponse, statusCode: number, body: string): void {
-  response.statusCode = statusCode;
-  response.setHeader("content-type", "application/json; charset=utf-8");
-  response.setHeader("cache-control", "no-store");
-  response.end(body);
-}
-
 function createRpcError(id: A2aRpcIdentifier, code: number, message: string): A2aRpcResponse {
   return { jsonrpc: "2.0", id, error: { code, message } };
 }
@@ -72,7 +62,7 @@ function writeRpcResponse(
 ): void {
   const measured = boundedJsonUtf8Bytes(value, MAX_RESPONSE_BODY_BYTES);
   if (measured.complete) {
-    writeJsonBody(response, 200, JSON.stringify(value));
+    writeJsonResponse(response, 200, value);
     return;
   }
   const errorMessage = "A2A response exceeds the 1 MiB limit";
@@ -222,6 +212,24 @@ export function createA2aHttpHandler(params: A2aHttpHandlerParams) {
         const text = extractA2aMessageText(message.parts);
         if (!text) {
           throw new A2aProtocolError(-32602, "Message must contain at least one usable text part");
+        }
+        if (message.taskId !== undefined) {
+          const referencedTask = params.taskStore.get(message.taskId, peerName);
+          if (!referencedTask) {
+            throw new A2aProtocolError(-32001, "Task not found");
+          }
+          if (message.contextId !== undefined && message.contextId !== referencedTask.contextId) {
+            throw new A2aProtocolError(
+              -32602,
+              "Message contextId does not match the referenced task",
+            );
+          }
+          // A context-only follow-up starts new work; a task reference must never
+          // silently allocate a replacement for an active or terminal task.
+          throw new A2aProtocolError(
+            -32004,
+            "Task continuation is not supported; omit taskId and reuse contextId to start a new task",
+          );
         }
         const messageId = message.messageId ?? randomUUID();
         const task = params.taskStore.create(

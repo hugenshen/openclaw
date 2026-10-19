@@ -252,6 +252,7 @@ async function main(): Promise<void> {
       !diagnostic.includes("\uD835") &&
       !diagnostic.includes(ASTRAL);
     const wellFormed = diagnostics.length > 0 && !hasLoneSurrogate(diagnostic);
+    console.log(`[code-mode syntax proof] diagnostic=${JSON.stringify(diagnostic)}`);
     console.log(
       `[code-mode syntax proof] pid=${instance.child.pid} exit=${String(rendered.code)} requests=${bodies.length} diagnostics=${diagnostics.length} well_formed=${String(wellFormed)} kept_boundary=${String(keptBoundary)}`,
     );

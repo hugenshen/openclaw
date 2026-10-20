@@ -45,7 +45,7 @@ third-party clients.
 | `MIN_NODE_PROTOCOL_VERSION`               | `3`                                                   | `packages/gateway-protocol/src/version.ts`                                                                                |
 | `MIN_PROBE_PROTOCOL_VERSION`              | `3`                                                   | `packages/gateway-protocol/src/version.ts`                                                                                |
 | Request timeout (per RPC)                 | `30_000` ms                                           | `packages/gateway-client/src/client.ts` (`requestTimeoutMs`)                                                              |
-| Preauth / connect-challenge timeout       | `15_000` ms                                           | `packages/gateway-client/src/timeouts.ts` (`OPENCLAW_HANDSHAKE_TIMEOUT_MS` env can raise the paired server/client budget) |
+| Preauth / connect-challenge timeout       | `30_000` ms                                           | `packages/gateway-client/src/timeouts.ts` (`OPENCLAW_HANDSHAKE_TIMEOUT_MS` env can raise the paired server/client budget) |
 | Initial reconnect backoff                 | `1_000` ms                                            | `packages/gateway-client/src/client.ts` (`GATEWAY_RECONNECT_POLICY`)                                                      |
 | Max reconnect backoff                     | `30_000` ms                                           | `packages/gateway-client/src/client.ts` (`GATEWAY_RECONNECT_POLICY`)                                                      |
 | Fast-retry clamp after device-token close | `250` ms                                              | `packages/gateway-client/src/client.ts`                                                                                   |
@@ -95,6 +95,7 @@ requires its own capability:
 | `worktrees retire-snapshot`                                  | `worktrees.retireSnapshot` | `worktrees-retire-snapshot-owner-v1` |
 | `pairing list`                                               | `channels.pairing.list`    | `channels-pairing-list-owner-v1`     |
 | `pairing approve`                                            | `channels.pairing.approve` | `channels-pairing-approve-owner-v1`  |
+| `pairing dismiss`                                            | `channels.pairing.dismiss` | `channels-pairing-dismiss-owner-v1`  |
 | Default `approvals get`                                      | `exec.approvals.get`       | `exec-approvals-get-owner-v1`        |
 | Default `approvals set` and allowlist edits                  | `exec.approvals.set`       | `exec-approvals-set-owner-v1`        |
 
@@ -133,9 +134,13 @@ new `worktrees.recoverRemoval` and `worktrees.retireSnapshot` methods require
 
 Older CLI and SDK binaries keep their existing direct-write behavior. Routing
 does not intercept those writes, arbitrary trusted SQL, or another state root
-sharing an external database. Match CLI, Gateway, and SDK versions; callers must
-retain their existing foreign-commit freshness checks. Routing covers the named
-operations above; it does not guarantee that the Gateway is the only SQLite writer.
+sharing an external database. Match CLI, Gateway, and SDK versions. All writers
+must route through the Gateway or acquire exclusive ownership while it is
+stopped; direct writes from another process while it is running are unsupported.
+Runtime caches use in-process write receipts, not foreign-commit freshness
+checks. Routing covers the named operations above; it cannot make an older
+direct writer safe to run alongside the Gateway. See
+[Database schemas](/reference/database-schemas) for the ownership contract.
 
 The following boundaries retain their existing owners and contracts:
 

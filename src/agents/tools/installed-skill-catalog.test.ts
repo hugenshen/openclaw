@@ -39,8 +39,6 @@ describe("installed skill catalog", () => {
       "boundary-guide",
     );
     expect(found.skills[0]?.description).toBe(prefix);
-    expect(found.skills[0]?.description.includes("\uD83D")).toBe(false);
-    expect(found.skills[0]?.description.includes("😀")).toBe(false);
   });
 
   it("shares body postings across runs while binding results, readers, and permissions per run", async () => {

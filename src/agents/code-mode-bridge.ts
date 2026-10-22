@@ -21,7 +21,6 @@ import {
   type CodeModeSessionStoreAccess,
 } from "./code-mode-session-store.js";
 import { createCodeModeToolApiFile } from "./code-mode-tool-api.js";
-import { boundInstalledSkillDescription } from "./installed-skill-catalog.js";
 import { consumeMcpCodeModeGuestResult } from "./mcp-content.js";
 import type { AgentToolUpdateCallback } from "./runtime/index.js";
 import { formatSkillInstructions } from "./skill-instruction-result.js";
@@ -462,7 +461,7 @@ export async function runBridgeRequest(params: {
           .slice(offset, offset + 20)
           .map(({ name, description, location }) => ({
             name,
-            description: boundInstalledSkillDescription(description),
+            description: truncateUtf16Safe(description, 512),
             location,
           }));
         break;

@@ -1,5 +1,5 @@
 {
-  "startupJsGzipBytes": 338803,
-  "reason": "Integrated main after schema and syntax-highlighting deferrals measures 338803 B at startup; cap at 338900 B with the existing 64 B build-variance allowance.",
-  "updatedAt": "2026-10-17"
+  "startupJsGzipBytes": 315852,
+  "reason": "Defer header session and sharing menus; retain Settings-only copy behind Settings",
+  "updatedAt": "2026-10-22"
 }

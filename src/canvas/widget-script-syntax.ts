@@ -205,8 +205,6 @@ export function findWidgetScriptSyntaxError(
       }
       const offset = bodyStart + error.pos;
       const { line, column } = getLineInfo(widgetCode, offset);
-      // Caps are display width. String.slice splits an emoji that lands on the boundary
-      // and the broken half is echoed back in the tool error.
       const snippet = truncateUtf16Safe(
         (widgetCode.slice(offset - column).split(/[\r\n\u2028\u2029]/u, 1)[0] ?? "").trim(),
         160,

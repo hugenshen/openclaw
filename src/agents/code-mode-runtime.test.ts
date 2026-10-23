@@ -229,7 +229,6 @@ describe("Code Mode guest source validation", () => {
     const message = error instanceof Error ? error.message : "";
     expect(message).toContain(`Identifier '${"a".repeat(227)}`);
     expect(message.includes("\uD835")).toBe(false);
-    expect(message.includes("\u{1D400}")).toBe(false);
   });
 
   it("bounds diagnostics containing long duplicate identifiers", () => {

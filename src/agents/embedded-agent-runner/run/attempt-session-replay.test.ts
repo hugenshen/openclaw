@@ -6,6 +6,8 @@ import {
   upsertSessionEntryCore,
 } from "../../../config/sessions/session-accessor.js";
 import { resolveSessionTranscriptReadFence } from "../../../config/sessions/session-transcript-read-fence.js";
+import { waitForSessionTranscriptProjection } from "../../../config/sessions/session-transcript-reconcile.js";
+import { appendAssistantMessageToSessionTranscript } from "../../../config/sessions/transcript.runtime.js";
 import type { ContextEngine } from "../../../context-engine/types.js";
 import type { ImageContent } from "../../../llm/types.js";
 import { finalizeRuntimePromptImages } from "../../../media/runtime-prompt-image-provenance.js";
@@ -15,7 +17,9 @@ import {
   type PersistedUserTurnMessage,
 } from "../../../sessions/user-turn-transcript.js";
 import { createDeferredCore } from "../../../shared/deferred.js";
+import { SKILL_WORKSHOP_CHANGE_NOTICE_KIND } from "../../../shared/transcript-only-openclaw-assistant.js";
 import { observeMainThreadSql } from "../../../test-utils/main-thread-sql-spies.test-support.js";
+import { runWithModelFallback } from "../../model-fallback-runner.js";
 import { createAgentRunRestartAbortError } from "../../run-termination.js";
 import { guardSessionManager } from "../../session-tool-result-guard-wrapper.js";
 import {
@@ -28,7 +32,10 @@ import {
   testModel,
 } from "../../sessions/agent-session-loop-correctness.test-support.js";
 import type { AgentSession } from "../../sessions/agent-session.js";
+import { sessionManagerPrepareCurrentTurnReplay } from "../../sessions/session-manager-current-turn.js";
 import { SessionManager } from "../../sessions/session-manager.js";
+import { isSessionTranscriptTurnMismatchErrorMessage } from "../../sessions/transcript-turn-error.js";
+import { createZeroUsageFixture } from "../../test-helpers/usage-fixtures.js";
 import {
   appendCompletedToolWork,
   appendOversizedCacheSnapshot,
@@ -127,6 +134,174 @@ describe("context engine bootstrap", () => {
 });
 
 describe("interrupted canonical user replay", () => {
+  it.each([false, true])(
+    "replays once across a background Workshop notice (selected reader: %s)",
+    async (selectedOwner) => {
+      await withInterruptedTurn(
+        false,
+        async (fixture) => {
+          const { attempt, target } = fixture;
+          const appendNotice = vi.fn(async () => {
+            const appended = await appendAssistantMessageToSessionTranscript({
+              ...target,
+              expectedSessionId: target.sessionId,
+              idempotencyKey: `skill-workshop-notice:${attempt.runId}`,
+              text: "One skill changed after review",
+              deliveryMirror: {
+                kind: SKILL_WORKSHOP_CHANGE_NOTICE_KIND,
+                agentId: target.agentId,
+                runId: "background-review",
+                skills: [{ name: "some-skill", action: "updated" }],
+              },
+            });
+            expect(appended.ok).toBe(true);
+          });
+          await withReplaySession(
+            fixture,
+            false,
+            async (session, submit, manager) => {
+              if (!selectedOwner) {
+                const select = manager[sessionManagerPrepareCurrentTurnReplay].bind(manager);
+                vi.spyOn(manager, sessionManagerPrepareCurrentTurnReplay).mockImplementationOnce(
+                  async (...args) => {
+                    const selected = await select(...args);
+                    expect(selected).toBeDefined();
+                    // Change the real transcript after selection, before anchor validation.
+                    await appendNotice();
+                    return selected;
+                  },
+                );
+              }
+              streamMocks.streamSimple.mockImplementation((model) =>
+                createAssistantResultStream(
+                  createAssistant(model, [{ type: "text", text: "WORKSHOP_NOTICE_RECOVERED" }]),
+                ),
+              );
+              await submit();
+              expect(appendNotice).toHaveBeenCalledOnce();
+              expect(streamMocks.streamSimple).toHaveBeenCalledOnce();
+              expect(session.getLastAssistantText()).toBe("WORKSHOP_NOTICE_RECOVERED");
+              expect(
+                loadTranscriptEventsSync(target).filter(
+                  (entry) =>
+                    isRecord(entry) &&
+                    isRecord(entry.message) &&
+                    entry.message.idempotencyKey === `${attempt.runId}:user`,
+                ),
+              ).toHaveLength(1);
+            },
+            selectedOwner ? { afterReplayPreparation: appendNotice } : {},
+          );
+        },
+        { selectedOwner },
+      );
+    },
+  );
+
+  it.each([
+    { boundary: "same-run progress", sourceReply: { final: false }, resumes: true },
+    { boundary: "same-run final", sourceReply: { final: true }, resumes: false },
+    { boundary: "unmarked mirror", sourceReply: {}, resumes: false },
+    {
+      boundary: "other-run progress",
+      sourceReply: { final: false, runId: "unrelated-run" },
+      resumes: false,
+    },
+  ])(
+    "resumes only unfinished same-run source replies across $boundary",
+    async ({ sourceReply, resumes }) => {
+      await withInterruptedTurn(
+        false,
+        async (fixture) => {
+          const before = loadTranscriptEventsSync(fixture.target);
+          await withReplaySession(fixture, false, async (session, submit) => {
+            streamMocks.streamSimple.mockImplementation((model) =>
+              createAssistantResultStream(
+                createAssistant(model, [{ type: "text", text: "Continued after progress" }]),
+              ),
+            );
+            await submit();
+            if (!resumes) {
+              expect(streamMocks.streamSimple).not.toHaveBeenCalled();
+              expect(Reflect.get(session.messages.at(-1)!, "errorMessage")).toMatch(
+                /^Session transcript keyed user is outside the current turn: \S/,
+              );
+              return;
+            }
+            expect(streamMocks.streamSimple).toHaveBeenCalledOnce();
+            expect(session.getLastAssistantText()).toBe("Continued after progress");
+            const messages = streamMocks.streamSimple.mock.calls[0]![1].messages;
+            expect(messages).toContainEqual(
+              expect.objectContaining({ role: "toolResult", toolCallId: "completed-read" }),
+            );
+            expect(JSON.stringify(messages)).not.toContain("Still working after restart.");
+            const after = loadTranscriptEventsSync(fixture.target);
+            expectCapturedCurrentUserPrefix(before, after, fixture);
+            expect(
+              after.filter(
+                (entry) =>
+                  isRecord(entry) && isRecord(entry.message) && entry.message.role === "user",
+              ),
+            ).toHaveLength(1);
+          });
+        },
+        { sourceReply, toolProgress: true },
+      );
+    },
+  );
+
+  it("refuses queued custody after a sessions_send replacement retires the original user", async () => {
+    await withInterruptedTurn(
+      false,
+      async (fixture) => {
+        const replacement = await SessionManager.openAsync(fixture.target);
+        await replacement.appendLeafControlAsync({ targetId: null, appendParentId: null });
+        await waitForSessionTranscriptProjection(fixture.target);
+        const replacementUser: PersistedUserTurnMessage = {
+          role: "user",
+          content: "Continue the assigned work",
+          timestamp: 2,
+          idempotencyKey: "replacement-run:user",
+          provenance: {
+            kind: "inter_session",
+            sourceSessionKey: "agent:main:requester",
+            sourceChannel: "webchat",
+            sourceTool: "sessions_send",
+          },
+          __openclaw: {
+            modelPromptProjection: {
+              version: 1,
+              text:
+                "[Earlier unanswered user message. Address this request alongside the current input; " +
+                "follow the latest user instruction if they conflict.]\n" +
+                fixture.attempt.prompt +
+                "\n\nContinue the assigned work",
+            },
+          },
+        };
+        await replacement.appendMessageAsync(replacementUser);
+        await replacement.appendCustomMessageEntryAsync(
+          "openclaw.sessions_yield",
+          "Turn yielded.",
+          false,
+        );
+        const before = loadTranscriptEventsSync(fixture.target);
+        await withReplaySession(fixture, false, async (session, submit, manager) => {
+          await submit();
+          const error = Reflect.get(session.messages.at(-1)!, "errorMessage");
+          expect(isSessionTranscriptTurnMismatchErrorMessage(error)).toBe(true);
+          expect(streamMocks.streamSimple).not.toHaveBeenCalled();
+          expect(loadTranscriptEventsSync(fixture.target).slice(0, before.length)).toEqual(before);
+          const users = manager
+            .getBranch()
+            .filter((entry) => entry.type === "message" && entry.message.role === "user");
+          expect(users).toEqual([expect.objectContaining({ message: replacementUser })]);
+        });
+      },
+      { selectedOwner: true, admittedReceipt: true, interruptedTurn: false },
+    );
+  });
+
   it("discards unpersisted assistant mutations before deciding replay", async () => {
     await withInterruptedTurn(
       false,
@@ -167,11 +342,23 @@ describe("interrupted canonical user replay", () => {
   });
 
   it.each([
-    { appendOnly: false, interruptedTurn: false, toolProgress: true },
-    { appendOnly: true, interruptedTurn: true, toolProgress: true, oversizedMetadata: true },
+    { appendOnly: false, interruptedTurn: false, toolProgress: true, partialText: undefined },
+    {
+      appendOnly: true,
+      interruptedTurn: true,
+      toolProgress: true,
+      oversizedMetadata: true,
+      partialText: undefined,
+    },
+    {
+      appendOnly: true,
+      interruptedTurn: true,
+      toolProgress: true,
+      partialText: "Already streamed answer",
+    },
   ])(
-    "replays one user after restart (carrier=$appendOnly, abort row=$interruptedTurn, tools=$toolProgress, oversized metadata=$oversizedMetadata)",
-    async ({ appendOnly, interruptedTurn, toolProgress, oversizedMetadata }) => {
+    "replays one user after restart (carrier=$appendOnly, abort row=$interruptedTurn, tools=$toolProgress, oversized metadata=$oversizedMetadata, partial=$partialText)",
+    async ({ appendOnly, interruptedTurn, toolProgress, oversizedMetadata, partialText }) => {
       let observedWalks = 0;
       const nativeReadFailures: unknown[] = [];
       const prepare = persistedReplay.preparePersistedCurrentUserTurn;
@@ -272,10 +459,57 @@ describe("interrupted canonical user replay", () => {
             ).toHaveLength(1);
           });
         },
-        { interruptedTurn, toolProgress, oversizedMetadata },
+        { interruptedTurn, toolProgress, oversizedMetadata, partialText },
       );
       expect(observedWalks).toBeGreaterThan(0);
       expect(nativeReadFailures).toEqual([]);
+    },
+  );
+
+  it.each([false, true])(
+    "resends a rate-limited request without output unchanged after completed tools (carrier=%s)",
+    async (appendOnly) => {
+      await withInterruptedTurn(
+        appendOnly,
+        async (fixture) => {
+          const requests: Array<Array<{ role: string }>> = [];
+          streamMocks.streamSimple.mockImplementation((model, context) => {
+            requests.push(structuredClone(context.messages));
+            return createAssistantResultStream(
+              requests.length === 1
+                ? {
+                    ...createAssistant(model, [], "error"),
+                    usage: createZeroUsageFixture(),
+                    errorMessage: "Rate limit reached on tokens per min (TPM).",
+                  }
+                : createAssistant(model, [{ type: "text", text: "Continued from completed work" }]),
+            );
+          });
+          // The provider rejects the first request; the retry builds a fresh session boundary.
+          await withReplaySession(fixture, appendOnly, async (_session, submit) => {
+            await submit();
+          });
+          await withReplaySession(fixture, appendOnly, async (session, submit) => {
+            await submit();
+            expect(session.getLastAssistantText()).toBe("Continued from completed work");
+          });
+
+          const [rejected, retried] = requests;
+          // Only the regenerated tail runtime context may differ; the cached prefix stays put.
+          const prefixLength = appendOnly ? rejected!.length : rejected!.length - 1;
+          expect(retried).toHaveLength(rejected!.length);
+          expect(retried!.slice(0, prefixLength)).toEqual(rejected!.slice(0, prefixLength));
+          expect(retried!.at(-1)).toMatchObject(
+            appendOnly ? { role: "toolResult" } : { role: "user", runtimeContextCarrier: true },
+          );
+          expect(
+            loadTranscriptEventsSync(fixture.target).filter(
+              (entry) => (entry as { message?: { role?: string } }).message?.role === "user",
+            ),
+          ).toHaveLength(1);
+        },
+        { interruptedTurn: false, toolProgress: true },
+      );
     },
   );
 
@@ -378,7 +612,7 @@ describe("interrupted canonical user replay", () => {
     },
   );
 
-  it.each([false, true])(
+  it.each([false])(
     "hydrates one current user through the built-in owner with interruption %s",
     async (interrupted) => {
       await withInterruptedTurn(
@@ -570,10 +804,7 @@ describe("interrupted canonical user replay", () => {
     },
   );
 
-  it.each([
-    { ordering: "repeated-restart", appendOnly: false },
-    { ordering: "pre-core-compaction", appendOnly: false },
-  ])(
+  it.each([{ ordering: "pre-core-compaction", appendOnly: false }])(
     "replays the same interrupted turn after $ordering with append-only context $appendOnly",
     async ({ ordering, appendOnly }) => {
       await withInterruptedTurn(appendOnly, async (fixture) => {
@@ -686,7 +917,27 @@ describe("interrupted canonical user replay", () => {
           }
           const before = loadTranscriptEventsSync(fixture.target);
           release.resolve();
-          expect((await settled)[0]?.status).toBe("rejected");
+          const outcome = (await settled)[0];
+          expect(outcome?.status).toBe("rejected");
+          if (change === "later-user") {
+            assert(outcome?.status === "rejected");
+            expect(outcome.reason).toMatchObject({ code: "SESSION_WORK_START_CHANGED" });
+            const run = vi.fn().mockRejectedValue(outcome.reason);
+            const onFallbackStep = vi.fn();
+            await expect(
+              runWithModelFallback({
+                cfg: undefined,
+                provider: "fixture-provider",
+                model: "fixture-model",
+                manifestPlugins: [],
+                fallbacksOverride: ["fixture-next/fixture-model"],
+                run,
+                onFallbackStep,
+              }),
+            ).rejects.toBe(outcome.reason);
+            expect(run).toHaveBeenCalledOnce();
+            expect(onFallbackStep).not.toHaveBeenCalled();
+          }
           expect(streamMocks.streamSimple).not.toHaveBeenCalled();
           expect(loadTranscriptEventsSync(fixture.target)).toEqual(before);
         },

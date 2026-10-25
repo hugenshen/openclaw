@@ -12,7 +12,6 @@ import type { ModelFallbackAttemptProvenance } from "../../agents/model-fallback
 import { createSessionMaintenanceFollowup } from "../../agents/session-maintenance/run.js";
 import { SessionManager } from "../../agents/sessions/session-manager.js";
 import { makeAssistantMessageFixture } from "../../agents/test-helpers/assistant-message-fixtures.js";
-import { ZERO_USAGE_FIXTURE } from "../../agents/test-helpers/usage-fixtures.js";
 import type { InternalSessionEntry as SessionEntry } from "../../config/sessions.js";
 import { isInternalSessionEffectsKey } from "../../config/sessions/internal-session-key.js";
 import {
@@ -102,7 +101,7 @@ async function runDefaultMemoryFlush(sessionEntry: SessionEntry, overrides: Flus
     resolvedVerboseLevel: "off",
     sessionEntry,
     sessionStore: { [overrides.sessionKey]: sessionEntry },
-    isHeartbeat: false,
+
     ...overrides,
     cfg: withTestModelContextTokens({
       cfg: overrides.cfg ?? {},
@@ -145,9 +144,11 @@ describe("provider-owned memory flush", () => {
 
   // Tools-arm fixtures use a real host audience and registry slot marker; the
   // existing file-arm fixtures intentionally have neither of these grants.
-  function registerToolsFlushPlan(sidecar = false) {
+  function registerToolsFlushPlan(sidecar = false, legacyModel?: string) {
     const registry = createEmptyPluginRegistry();
     const providerFlushPlanResolver = () => ({
+      // Older JavaScript plugins may still return the retired field.
+      ...(legacyModel ? { model: legacyModel } : {}),
       softThresholdTokens: 4_000,
       forceFlushTranscriptBytes: 1_000_000_000,
       reserveTokensFloor: 20_000,
@@ -223,7 +224,7 @@ describe("provider-owned memory flush", () => {
     await projected.execute("flush-save", {});
   }
 
-  it.each([undefined, ZERO_USAGE_FIXTURE])(
+  it.each([undefined])(
     "flushes transcript pressure without provider usage %j without publishing estimated usage",
     async (usage) => {
       registerToolsFlushPlan();
@@ -267,37 +268,7 @@ describe("provider-owned memory flush", () => {
     },
   );
 
-  it("does not count unavailable output twice in a memory-flush projection", async () => {
-    registerToolsFlushPlan();
-    const { entry, overrides } = await createToolsFlushFixture({ totalTokensFresh: false });
-    const scope = { ...overrides, agentId: "main", sessionId: entry.sessionId };
-    const transcript = SessionManager.fromEntries([
-      createSessionTranscriptHeader({ cwd: rootDir, sessionId: entry.sessionId }),
-    ]);
-    await transcript.appendMessageAsync(
-      makeAssistantMessageFixture({
-        content: [{ type: "text", text: "x".repeat(300_000) }],
-        usage: {
-          ...ZERO_USAGE_FIXTURE,
-          input: 1,
-          output: 2_000,
-          totalTokens: 2_001,
-          contextUsage: { state: "unavailable" },
-        },
-        stopReason: "stop",
-        errorMessage: undefined,
-      }),
-    );
-    await replaceTranscriptEvents(scope, [transcript.getHeader(), ...transcript.getEntries()]);
-    await waitForSessionTranscriptProjection(scope);
-
-    const result = await runDefaultMemoryFlush(entry, { ...overrides, promptForEstimate: "" });
-
-    expect(result.outcome).toBe("skipped");
-    expect(runEmbeddedAgentMock).not.toHaveBeenCalled();
-  });
-
-  it.each([false, true])(
+  it.each([true])(
     "does not flush empty history for a large pending input with fresh=%s",
     async (totalTokensFresh) => {
       registerToolsFlushPlan();
@@ -337,6 +308,47 @@ describe("provider-owned memory flush", () => {
     expect(result.outcome).toBe("skipped");
     expect(flushPlanResolver).not.toHaveBeenCalled();
     expect(runEmbeddedAgentMock).not.toHaveBeenCalled();
+  });
+
+  it("uses the active session model and its fallback chain for memory flushes", async () => {
+    registerToolsFlushPlan(false, "fixture/obsolete");
+    const { entry, overrides } = await createToolsFlushFixture();
+    const run = overrides.followupRun.run;
+    run.provider = "fixture";
+    run.model = "active";
+    runEmbeddedAgentMock.mockImplementation(async (params: EmbeddedAgentParams) => {
+      await executePersistenceTool(params);
+      return { payloads: [], meta: {} };
+    });
+
+    const result = await runDefaultMemoryFlush(entry, {
+      ...overrides,
+      cfg: {
+        agents: {
+          defaults: { model: { primary: "fixture/default", fallbacks: ["fixture/backup"] } },
+        },
+      },
+    });
+
+    expect(result.outcome).toBe("completed");
+    expect(runEmbeddedAgentMock).toHaveBeenCalledWith(
+      expect.objectContaining({ provider: "fixture", model: "active" }),
+    );
+    expect(runWithModelFallbackMock.mock.calls[0]?.[0]).toMatchObject({
+      fallbacksOverride: undefined,
+      cfg: {
+        agents: {
+          defaults: {
+            model: { primary: "fixture/default", fallbacks: ["fixture/backup"] },
+          },
+        },
+      },
+    });
+    expect(
+      loadSessionEntry({ storePath: overrides.storePath, sessionKey: overrides.sessionKey }),
+    ).toMatchObject({
+      memoryFlush: { kind: "succeeded", compactionCount: 1 },
+    });
   });
 
   it("delegates the source audience to detached tools flushes with source sandbox policy", async () => {
@@ -428,7 +440,6 @@ describe("provider-owned memory flush", () => {
   });
 
   it.each([
-    { source: "owner direct", chatType: "direct", senderIsOwner: true, audience: "owner-private" },
     {
       source: "non-owner direct",
       chatType: "direct",

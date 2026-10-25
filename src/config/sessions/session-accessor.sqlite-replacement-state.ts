@@ -1,11 +1,12 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
-import { getAdmittedSqliteSchemaFacts } from "../../infra/sqlite-schema-facts.js";
+import { getAdmittedSqlSchemaFacts } from "../../infra/sqlite-schema-facts.js";
 import { freezeJsonSnapshot } from "../../shared/immutable-data.js";
 import { readOpenClawAgentDatabaseIdentity } from "../../state/openclaw-agent-db-identity.js";
 import type { OpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import { readSessionActivitySummary } from "./activity-summary.js";
 import { isInternalSessionEffectsKey } from "./internal-session-key.js";
 import { hasPendingSessionTranscriptArchives } from "./session-accessor.sqlite-archive-store-kernel.js";
+import { readStagedConversationPublications } from "./session-accessor.sqlite-conversation-publication.js";
 import { assertSessionCreationLabelAvailable } from "./session-accessor.sqlite-creation-read.js";
 import {
   sessionSharingEntriesEqual,
@@ -40,6 +41,7 @@ import { readSessionTranscriptWatermarkInDatabase } from "./session-accessor.sql
 import { readSessionActorTransactionState } from "./session-actor-transaction.js";
 import {
   captureSessionEntryPublicationSource,
+  discardSessionEntryPublicationSource,
   hasSessionEntryPublicationCapacity,
 } from "./session-entry-publication-source.js";
 import { attachSessionEntrySnapshots } from "./session-entry-snapshot-values.js";
@@ -125,12 +127,13 @@ export function prepareSessionEntryReplacementPublication(
         ],
         hasBoard: postimage?.sideTables.hasBoard ?? committed?.row.board_present === 1,
         activitySummaryWatermark: readSessionActivitySummary(projectedEntry)
-          ? readSessionTranscriptWatermarkInDatabase(database, projectedEntry.sessionId)
+          ? (postimage?.transcriptWatermark ??
+            readSessionTranscriptWatermarkInDatabase(database, projectedEntry.sessionId))
           : undefined,
       }),
     );
   }
-  const source = getAdmittedSqliteSchemaFacts(database.db)
+  const source = getAdmittedSqlSchemaFacts(database.db)
     ? captureSessionEntryPublicationSource(database.db, {
         ...readOpenClawAgentDatabaseIdentity(database),
         // Actor receipts carry the complete postimage at the native writer revision.
@@ -141,9 +144,16 @@ export function prepareSessionEntryReplacementPublication(
     : undefined;
   const changedKeys = [
     ...new Set([...result.previous.keys(), ...result.current.keys(), ...archived]),
-  ];
+  ].filter(
+    (key) =>
+      invalidated.has(key) ||
+      options?.postimages?.get(key)?.changed !== false ||
+      // A final no-op must not hide an earlier replacement of the same key.
+      !sqliteSessionEntriesEqual(result.previous.get(key), result.current.get(key)),
+  );
   const publication: SessionEntryReplacementPublication = {
     kind: "session-entry-replacements",
+    conversationPublication: readStagedConversationPublications(database),
     transcriptPublication: readStagedSessionTranscriptAuthority(database),
     pendingArchiveRecovery: result.pendingArchiveRecovery,
     membershipInvalidatedKeys: result.membershipInvalidatedKeys,
@@ -193,12 +203,16 @@ export function boundSessionEntryReplacementPublication(
   publication: SessionEntryReplacementPublication,
   envelope: unknown = publication,
 ): void {
-  if (!publication.fullEntries || hasSessionEntryPublicationCapacity(envelope)) {
+  if (
+    (!publication.fullEntries && !publication.actorPostimages) ||
+    hasSessionEntryPublicationCapacity(envelope)
+  ) {
     return;
   }
   delete publication.fullEntries;
+  delete publication.actorPostimages;
   if (publication.source) {
-    delete publication.source.writeToken;
+    discardSessionEntryPublicationSource(publication.source);
   }
 }
 
@@ -292,6 +306,7 @@ export function commitSessionEntryReplacementsInDatabase(
             : canonicalFacts?.window,
         canonicalPreviousSideTables: canonicalFacts?.sideTables,
         postimages: writtenPostimages,
+        publishConversationBinding: (replacement.previousSessionKeys?.length ?? 0) > 0,
       },
     );
     deleteLegacySessionEntryRows(
@@ -309,6 +324,8 @@ export function commitSessionEntryReplacementsInDatabase(
     // Each later replacement starts from the preceding write, including shared physical windows.
     const postimage = writtenPostimages.get(replacement.sessionKey);
     if (postimage) {
+      // Repeated keys are a mutation batch even when the final write returns to its start.
+      postimage.changed ||= current.has(replacement.sessionKey);
       transactionRows.set(replacement.sessionKey, {
         entry: postimage.entry,
         row: {

@@ -1,10 +1,14 @@
 import fs from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { trackSqliteStatementExecutions } from "../../test/helpers/sqlite-statement-execution-counter.js";
+import {
+  observeHostDataSql,
+  trackSqliteStatementExecutions,
+} from "../../test/helpers/sqlite-statement-execution-counter.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { requireNodeSqlite } from "../infra/node-sqlite.js";
 import { OpenClawStateExternalOwnershipError } from "../infra/sqlite-lifecycle-errors.js";
 import { runSqliteReadOperationSync } from "../infra/sqlite-schema-facts.js";
+import { classifySqliteMutation } from "../infra/sqlite-schema-mutation.js";
 import { extractSqliteTableSchema } from "../infra/sqlite-schema-sql.js";
 import * as operationAdmission from "../infra/sqlite-worker-operation-admission.js";
 import {
@@ -15,6 +19,7 @@ import {
 } from "../state/openclaw-state-db.js";
 import { claimOpenClawStateOwnership } from "../state/openclaw-state-ownership-operations.js";
 import { OPENCLAW_STATE_SCHEMA_SQL } from "../state/openclaw-state-schema.js";
+import { requireNativeSqliteDatabase } from "../test-utils/native-sqlite.js";
 import { NodeWorkerJournalWorker } from "./node-worker-journal-worker.js";
 import { NodeWorkerLaunchStore } from "./node-worker-launch-store.js";
 import {
@@ -26,6 +31,7 @@ import {
   recordNodeWorkerLineageSettled,
 } from "./node-worker-lineage-completion.js";
 import { requireNodeWorkerProcessIdentity } from "./node-worker-process-identity.js";
+import * as workerProcessIdentity from "./node-worker-process-identity.js";
 import { projectNodeWorkerSupervisorReceipt } from "./node-worker-supervisor-contract.js";
 import { createNodeWorkerSupervisor } from "./node-worker-supervisor.js";
 import { writeNodeWorkerFixture } from "./node-worker-supervisor.test-support.js";
@@ -107,6 +113,73 @@ function launchIds(database: ReturnType<typeof openOpenClawStateDatabase>["db"])
 }
 
 describe("node worker launch admitted schema", () => {
+  it("claims and starts a launch on initialized tables without revoking schema authority", () => {
+    const env = { OPENCLAW_STATE_DIR: tempDirs.make("node-worker-launch-warm-schema-") };
+    const opened = openOpenClawStateDatabase({ env });
+    const tables = [
+      "node_worker_launches",
+      "node_worker_launch_boots",
+      "node_worker_launch_containers",
+      "node_worker_launch_cleanup",
+      "node_worker_launch_process_scopes",
+    ];
+    opened.db.exec(
+      tables
+        .map((table) =>
+          extractSqliteTableSchema(OPENCLAW_STATE_SCHEMA_SQL, table, {
+            endMarker:
+              table === "node_worker_launches"
+                ? "\n  WHERE completed_at_ms IS NOT NULL;"
+                : undefined,
+          }),
+        )
+        .join("\n"),
+    );
+    const admission = vi
+      .spyOn(operationAdmission, "requestSqliteWorkerOperationAdmission")
+      .mockImplementation(() => {});
+    const sql = observeHostDataSql();
+    try {
+      const kernel = new NodeWorkerLaunchKernel({ database: opened, env });
+      const supervisor = requireNodeWorkerProcessIdentity(process.pid);
+      const claim = {
+        launchId: "warm-launch",
+        planHash: "a".repeat(64),
+        gatewayNamespace: "gateway-1",
+        environmentId: "environment-1",
+        sessionId: "session-1",
+        ownerEpoch: 3,
+        placementGeneration: 4,
+        runId: "run-1",
+      };
+      expect(
+        kernel.claim(claim, supervisor, 2, NOW_MS, undefined, undefined, "boot-1"),
+      ).toMatchObject({ action: "start", receipt: { state: "pending", bootId: "boot-1" } });
+      const running = kernel.markRunning({
+        ...claim,
+        supervisor,
+        worker: supervisor,
+        cleanupMode: "linux-subreaper",
+        container: { engine: "docker", containerId: "b".repeat(64), engineTarget: "c".repeat(64) },
+        nowMs: NOW_MS,
+      });
+      expect(running).toMatchObject({
+        state: "running",
+        bootId: "boot-1",
+        workerCleanupMode: "linux-subreaper",
+        workerDescendantsReaped: false,
+        container: { engine: "docker", containerId: "b".repeat(64) },
+      });
+      expect(kernel.get(claim.launchId)).toEqual(running);
+      expect(
+        sql.queries.filter((query) => classifySqliteMutation(query, "batch").mainSchemaChange),
+      ).toEqual([]);
+    } finally {
+      sql.restore();
+      admission.mockRestore();
+    }
+  });
+
   function kernelFixture() {
     const env = { OPENCLAW_STATE_DIR: tempDirs.make("node-worker-launch-schema-") };
     const opened = openOpenClawStateDatabase({ env });
@@ -130,7 +203,7 @@ describe("node worker launch admitted schema", () => {
           runSqliteReadOperationSync(db, () => readNodeWorkerLaunchReceipt(db, receipt.launchId)),
         ).toEqual(receipt);
         const reads = trackSqliteStatementExecutions(
-          db,
+          requireNativeSqliteDatabase(db),
           ["schema", "dataVersion", "launch"],
           (sql) => {
             if (/sqlite_(?:schema|master)/iu.test(sql)) {
@@ -311,6 +384,52 @@ describe("node worker launch store pruning", () => {
     });
   });
 
+  it("records Windows Job custody in the existing cleanup table without certifying old receipts", async () => {
+    const { database, store } = await fixture();
+    database.exec(`
+      CREATE TABLE node_worker_launch_cleanup (
+        launch_id TEXT NOT NULL PRIMARY KEY
+          REFERENCES node_worker_launches(launch_id) ON DELETE CASCADE,
+        cleanup_mode TEXT NOT NULL CHECK (cleanup_mode IN ('process-group', 'owned-anchor')),
+        lineage_settled INTEGER CHECK (lineage_settled IS NULL OR lineage_settled = 1)
+      ) STRICT;
+    `);
+    const schemaBefore = database
+      .prepare("SELECT sql FROM sqlite_schema WHERE name = ?")
+      .get("node_worker_launch_cleanup");
+    const boot = vi
+      .spyOn(workerProcessIdentity, "getNodeWorkerBootIdentity")
+      .mockReturnValue("win32:test-boot");
+    const previous = await claimLaunch(store, "old-windows-worker");
+    await store.markRunning({
+      launchId: "old-windows-worker",
+      ...previous,
+      worker: previous.supervisor,
+      cleanupMode: "process-group",
+    });
+    const current = await claimLaunch(store, "job-worker");
+    boot.mockRestore();
+    await store.markRunning({
+      launchId: "job-worker",
+      ...current,
+      worker: current.supervisor,
+      cleanupMode: "windows-job",
+    });
+    expect(await store.get("old-windows-worker")).toMatchObject({
+      state: "running",
+      workerCleanupMode: "process-group",
+    });
+    expect(await store.get("job-worker")).toMatchObject({
+      state: "running",
+      workerCleanupMode: "windows-job",
+    });
+    expect(
+      database
+        .prepare("SELECT sql FROM sqlite_schema WHERE name = ?")
+        .get("node_worker_launch_cleanup"),
+    ).toEqual(schemaBefore);
+  });
+
   it("prunes only the oldest expired terminal receipts in bounded batches", async () => {
     const { database, store } = await fixture();
     insertLaunch({ database, launchId: "old-completed", state: "completed", completedAtMs: 1 });
@@ -484,8 +603,13 @@ describe("node worker terminal ownership", () => {
       const admission = vi
         .spyOn(operationAdmission, "requestSqliteWorkerOperationAdmission")
         .mockImplementation(() => {});
-      const reads = trackSqliteStatementExecutions(database, ["launch"], (sql) =>
-        sql.startsWith("select ") && sql.includes('from "node_worker_launches"') ? "launch" : null,
+      const reads = trackSqliteStatementExecutions(
+        requireNativeSqliteDatabase(database),
+        ["launch"],
+        (sql) =>
+          sql.startsWith("select ") && sql.includes('from "node_worker_launches"')
+            ? "launch"
+            : null,
       );
       let terminal: ReturnType<NodeWorkerLaunchKernel["finishCancelled"]>;
       try {
@@ -649,7 +773,12 @@ describe("node worker cleanup journal", () => {
   async function runningAnchor(cleanupMode: "owned-anchor" | "linux-subreaper" = "owned-anchor") {
     const { database, env, store } = await fixture();
     const launchId = "anchor-launch";
-    const { planHash, supervisor } = await claimLaunch(store, launchId);
+    const boot = vi
+      .spyOn(workerProcessIdentity, "getNodeWorkerBootIdentity")
+      .mockReturnValue("linux:test-boot");
+    const { planHash, supervisor } = await claimLaunch(store, launchId).finally(() =>
+      boot.mockRestore(),
+    );
     const binding = await store.cleanupBinding({ launchId, planHash, supervisor });
     const receipt = await store.markRunning({
       launchId,

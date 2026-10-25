@@ -23,6 +23,7 @@ import type { EmbeddedAgentRunResult } from "./types.js";
 
 export type RunEntryModelResolve = {
   prompt: string;
+  awaitSessionDiffBaseline?: () => Promise<void>;
   images?: readonly { mimeType?: string }[];
   cwd?: string;
   modelSelectionLocked?: boolean;
@@ -40,6 +41,9 @@ export type RunEntryCandidateOptions = {
   agentHarnessRuntimeOverride: string | undefined;
   assistantErrorTranscript: AssistantErrorTranscript;
   authProfileFailurePolicy?: AuthProfileFailurePolicy;
+  /** Turn-local Access escalation; preserves the refused attempt's account. */
+  cyberAccessProgram?: "daybreak_blue";
+  authProfileId?: string;
   classifyResult: (result: EmbeddedAgentRunResult) => ModelFallbackResultClassification;
   allowTransientCooldownProbe?: boolean;
   isFinalFallbackAttempt?: boolean;
@@ -90,6 +94,8 @@ export type EmbeddedAgentRunEntryParams<T extends EmbeddedAgentRunResult> = {
     agentId: string;
     sessionId: string;
     sessionKey?: string;
+    /** Original session owner revision; null means the owner had no revision. */
+    sessionLifecycleRevision?: string | null;
     lane?: string;
   };
   harness: {

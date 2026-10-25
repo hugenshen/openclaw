@@ -11,13 +11,13 @@ import { hasDeliveryTargetFields } from "../../utils/delivery-context.shared.js"
 import { getRuntimeConfig } from "../io.js";
 import type { OpenClawConfig } from "../types.openclaw.js";
 import { resolveSessionStorePathCore } from "./paths.js";
+import { captureMemoryExactSessionReader } from "./session-accessor.memory-exact-read.js";
 import type { SessionEntrySummary } from "./session-accessor.types.js";
 import {
   readSessionEntryReadOnlyInWorker,
   readSessionEntriesFromStoreInWorker,
   readSessionEntrySummariesInWorker,
 } from "./session-entry-read-runtime.js";
-import { captureIncognitoSessionBinding } from "./session-incognito-binding.js";
 import {
   foldedSessionKeyAliasCandidates,
   hasMismatchedCaseSensitiveDeliveryProof,
@@ -63,9 +63,9 @@ export async function readExactSessionDeliveryContext(params: {
  */
 export async function extractDeliveryInfo(
   sessionKey: string | undefined,
-  options?: { cfg?: OpenClawConfig },
+  options?: { cfg?: OpenClawConfig; agentId?: string },
 ): Promise<DeliveryInfo> {
-  return (await extractDeliveryInfoBatch([sessionKey], options))[0]!;
+  return (await extractDeliveryInfoBatch([{ sessionKey, agentId: options?.agentId }], options))[0]!;
 }
 
 type DeliveryInfo = {
@@ -79,6 +79,7 @@ type DeliveryLookup = {
   agentId: string;
   sessionKeys: string[];
   baseKeys: string[];
+  exactKeys: string[];
   storePaths: string[];
 };
 
@@ -87,13 +88,19 @@ type DeliveryStoreRead = {
   normalizedIndex: () => Promise<Map<string, SessionEntry>>;
 };
 
+type DeliveryExactRead = {
+  entries: SessionEntrySummary[];
+  source?: { agentId: string; path: string };
+};
+
 /** Resolves one batch through the session owner; only detached delivery facts leave the read scope. */
 export async function extractDeliveryInfoBatch(
-  sessionKeys: readonly (string | undefined)[],
+  requests: readonly { sessionKey?: string; agentId?: string }[],
   options?: { cfg?: OpenClawConfig },
 ): Promise<DeliveryInfo[]> {
-  const parsed = sessionKeys.map((sessionKey) => ({
+  const parsed = requests.map(({ sessionKey, agentId }) => ({
     sessionKey,
+    agentId,
     ...resolveSessionThreadInfo(sessionKey),
   }));
   const results: DeliveryInfo[] = parsed.map(({ threadId }) => ({
@@ -115,17 +122,22 @@ export async function extractDeliveryInfoBatch(
   } catch {
     return results;
   }
-  function prepareDeliveryLookup(sessionKey: string, baseSessionKey: string): DeliveryLookup {
+  function prepareDeliveryLookup(
+    sessionKey: string,
+    baseSessionKey: string,
+    requestedAgentId?: string,
+  ): DeliveryLookup {
     const { agentId, canonicalKey: canonicalBaseKey } = resolveSessionStoreIdentity({
       cfg,
       sessionKey: baseSessionKey,
+      agentId: requestedAgentId,
     });
     const canonicalKey = resolveSessionStoreKey({ cfg, sessionKey, storeAgentId: agentId });
     const incognito = isIncognitoSessionKey(sessionKey)
-      ? captureIncognitoSessionBinding({ agentId, sessionKey })
+      ? captureMemoryExactSessionReader({ agentId, sessionKey })
       : undefined;
     const storePaths = new Set([
-      incognito?.actor.path ?? resolveSessionStorePathCore(cfg.session?.store, { agentId }),
+      incognito?.path ?? resolveSessionStorePathCore(cfg.session?.store, { agentId }),
     ]);
     for (const target of incognito ? [] : storeTargets) {
       if (target.agentId === agentId) {
@@ -136,10 +148,16 @@ export async function extractDeliveryInfoBatch(
       agentId,
       sessionKeys: [sessionKey, canonicalKey],
       baseKeys: [baseSessionKey, canonicalBaseKey],
+      exactKeys: deliveryLookupExactKeys([
+        sessionKey,
+        canonicalKey,
+        baseSessionKey,
+        canonicalBaseKey,
+      ]),
       storePaths: [...storePaths],
     };
   }
-  const lookups = parsed.flatMap(({ sessionKey, baseSessionKey }, index) => {
+  const lookups = parsed.flatMap(({ sessionKey, baseSessionKey, agentId }, index) => {
     if (!sessionKey || !baseSessionKey) {
       return [];
     }
@@ -149,20 +167,43 @@ export async function extractDeliveryInfoBatch(
           index,
           sessionKey,
           baseSessionKey,
-          lookup: prepareDeliveryLookup(sessionKey, baseSessionKey),
+          lookup: prepareDeliveryLookup(sessionKey, baseSessionKey, agentId),
         },
       ];
     } catch {
       return [];
     }
   });
-  const exactReads = new Map<
+  const firstStoreBatches = new Map<
     string,
-    Promise<{ entries: SessionEntrySummary[]; source?: { agentId: string; path: string } }>
+    {
+      keySets: Set<string>;
+      keys: Set<string>;
+      read?: Promise<
+        | { entries: Map<string, SessionEntrySummary>; source: DeliveryExactRead["source"] }
+        | undefined
+      >;
+    }
   >();
-  const readExact = (storePath: string, lookup: DeliveryLookup) => {
-    const candidateKeys = deliveryLookupExactKeys([...lookup.sessionKeys, ...lookup.baseKeys]);
-    const cacheKey = JSON.stringify([storePath, candidateKeys]);
+  for (const { lookup } of lookups) {
+    if (lookup.sessionKeys.some(isIncognitoSessionKey)) {
+      continue;
+    }
+    const key = JSON.stringify([lookup.agentId, lookup.storePaths[0]]);
+    let batch = firstStoreBatches.get(key);
+    if (!batch) {
+      batch = { keySets: new Set(), keys: new Set() };
+      firstStoreBatches.set(key, batch);
+    }
+    batch.keySets.add(JSON.stringify(lookup.exactKeys));
+    for (const candidateKey of lookup.exactKeys) {
+      batch.keys.add(candidateKey);
+    }
+  }
+  const exactReads = new Map<string, Promise<DeliveryExactRead>>();
+  const readIndependent = (storePath: string, lookup: DeliveryLookup) => {
+    const candidateKeys = lookup.exactKeys;
+    const cacheKey = JSON.stringify([lookup.agentId, storePath, candidateKeys]);
     let read = exactReads.get(cacheKey);
     if (!read) {
       read = lookup.sessionKeys.some(isIncognitoSessionKey)
@@ -187,6 +228,41 @@ export async function extractDeliveryInfoBatch(
       exactReads.set(cacheKey, read);
     }
     return read;
+  };
+  const readExact = async (
+    storePath: string,
+    lookup: DeliveryLookup,
+  ): Promise<DeliveryExactRead> => {
+    const batch =
+      !lookup.sessionKeys.some(isIncognitoSessionKey) && storePath === lookup.storePaths[0]
+        ? firstStoreBatches.get(JSON.stringify([lookup.agentId, storePath]))
+        : undefined;
+    if (batch && batch.keySets.size > 1) {
+      batch.read ??= readSessionEntriesFromStoreInWorker({
+        agentId: lookup.agentId,
+        storePath,
+        sessionKeys: [...batch.keys],
+        projection: "list",
+        snapshotFields: [],
+      })
+        .then(({ entries, source }) => ({
+          entries: new Map(entries.map((row) => [row.sessionKey, row])),
+          source,
+        }))
+        // One unreadable target must not suppress healthy targets in the same store.
+        .catch(() => undefined);
+      const combined = await batch.read;
+      if (combined) {
+        return {
+          entries: lookup.exactKeys.flatMap((key) => {
+            const row = combined.entries.get(key);
+            return row ? [row] : [];
+          }),
+          source: combined.source,
+        };
+      }
+    }
+    return readIndependent(storePath, lookup);
   };
   const indexes = new Map<string, DeliveryStoreRead["normalizedIndex"]>();
   for (const { index, sessionKey, baseSessionKey, lookup } of lookups) {
@@ -335,9 +411,6 @@ function buildFreshestSessionEntryIndex(
     }
   };
   for (const { sessionKey: key, entry } of entries) {
-    if (!entry) {
-      continue;
-    }
     const normalized = normalizeStoreSessionKey(key);
     indexEntry(normalized, entry);
     // Lowercase aliases are only indexed when case folding is not proof-sensitive; Matrix-style
@@ -353,7 +426,7 @@ function buildFreshestSessionEntryIndex(
 
 async function loadDeliverySessionEntry(
   lookup: DeliveryLookup,
-  readStore: (storePath: string, storeIndex: number) => Promise<DeliveryStoreRead>,
+  readStore: (storePath: string) => Promise<DeliveryStoreRead>,
 ) {
   let fallback:
     | {
@@ -361,8 +434,8 @@ async function loadDeliverySessionEntry(
         baseEntry: Awaited<ReturnType<typeof findSessionEntryInStore>>;
       }
     | undefined;
-  for (const [storeIndex, storePath] of lookup.storePaths.entries()) {
-    const store = await readStore(storePath, storeIndex);
+  for (const storePath of lookup.storePaths) {
+    const store = await readStore(storePath);
     const entry = await findSessionEntryInStore(store, lookup.sessionKeys);
     const baseEntry = await findSessionEntryInStore(store, lookup.baseKeys);
     if (!entry && !baseEntry) {

@@ -1,3 +1,5 @@
+import { stableStringify } from "@openclaw/normalization-core";
+import { sha256Hex } from "@openclaw/normalization-core/node-crypto";
 import { withOwnedSessionTranscriptWrites } from "../../../config/sessions/transcript-write-context.js";
 import type { ContextEngine } from "../../../context-engine/types.js";
 import { createAnthropicPayloadLogger } from "../../anthropic-payload-log.js";
@@ -7,11 +9,15 @@ import { DEFAULT_CONTEXT_TOKENS } from "../../defaults.js";
 import { getOpenClawSystemUpdateKind } from "../../internal-runtime-context.js";
 import type { AgentSession } from "../../sessions/index.js";
 import { withSessionManagerAppend } from "../../sessions/session-manager-append-admission.js";
+import type { AnyAgentTool } from "../../tools/common.js";
+import { declarePromptToolPin } from "../prompt-cache-observability.js";
 import { getProviderPromptState } from "../provider-prompt-state.js";
 import {
   retainEmbeddedSessionPromptState,
   beginSessionSystemPrompt,
+  buildSystemPromptRouteKey,
   prepareSessionSystemPrompt,
+  prepareSessionToolSurface,
   retireSessionSystemPrompt,
 } from "../session-prompt-state.js";
 import { restoreCacheTtlToolResultProjections } from "../tool-result-truncation.js";
@@ -46,6 +52,7 @@ type EmbeddedAttemptSessionRuntimeState = {
   prePromptMessageCount: number;
   promptCache: EmbeddedRunAttemptResult["promptCache"];
   systemPromptText: string;
+  systemPromptSeries?: ReturnType<typeof prepareSessionSystemPrompt>["seriesStatus"];
 };
 
 export async function prepareEmbeddedAttemptSessionRuntime(input: {
@@ -101,6 +108,11 @@ export async function prepareEmbeddedAttemptSessionRuntime(input: {
   const effectiveToolCount = effectiveTools.length;
   const sessionPreparation = {
     attempt,
+    assertCurrent: () => {
+      runAbortSignal.throwIfAborted();
+      sessionLock.ownedTranscriptWriteContext.assertCommitAllowed?.();
+      sessionLock.ownedTranscriptWriteContext.initialWriter?.assertActive();
+    },
     ...(input.activeContextEngine ? { activeContextEngine: input.activeContextEngine } : {}),
     agentDir: input.agentDir,
     effectiveCwd,
@@ -112,6 +124,8 @@ export async function prepareEmbeddedAttemptSessionRuntime(input: {
     () =>
       prepareEmbeddedAttemptSessionManager({
         ...sessionPreparation,
+        sessionTarget: sessionLock.ownedTranscriptWriteContext.sessionTarget,
+        runAbortSignal,
         onSessionManagerCreated: (manager) => {
           resources.sessionManager = manager;
         },
@@ -135,15 +149,15 @@ export async function prepareEmbeddedAttemptSessionRuntime(input: {
   const sessionPromptState = promptStateLease.state;
   const usesSystemPromptSeries =
     !input.isRawModelRun && attempt.operation !== "settled-tool-finalization";
-  const promptRouteKey = JSON.stringify([
-    attempt.provider,
-    attempt.modelId,
-    attempt.model.api,
-    attempt.model.baseUrl,
-    transcriptPolicy.inHistorySystemUpdates === true,
-    // Personal bootstrap follows the selected human, not only the session ID.
-    attempt.bootstrapUserProfileId,
-  ]);
+  const promptRouteKey = buildSystemPromptRouteKey({
+    provider: attempt.provider,
+    model: attempt.modelId,
+    api: attempt.model.api,
+    baseUrl: attempt.model.baseUrl,
+    inHistorySystemUpdates: transcriptPolicy.inHistorySystemUpdates === true,
+    // Personal bootstrap follows the session's selected human, not only the session ID.
+    personalProfile: attempt.bootstrapUserProfileId,
+  });
   // Retire old overrides before new carriers without checkpointing unadmitted notices.
   const retireSystemPromptUpdates = () =>
     sessionLock.withOwnedTranscriptWrite(() =>
@@ -179,6 +193,10 @@ export async function prepareEmbeddedAttemptSessionRuntime(input: {
             systemPrompt: freshSystemPrompt,
             entries: sessionManager.getBranch(),
           });
+          // Keep an attempt's restart visible through subsequent continuation preparations.
+          if (prepared.restart || state.systemPromptSeries === undefined) {
+            state.systemPromptSeries = prepared.seriesStatus;
+          }
           let restartRecorded = false;
           if (prepared.restart && resources.session) {
             await retireSystemPromptUpdates();
@@ -194,6 +212,30 @@ export async function prepareEmbeddedAttemptSessionRuntime(input: {
   resources.getUserTranscriptContexts =
     preparedSessionManager.userMessageBoundary.getUserTranscriptContexts;
 
+  // Every turn of the session sends the pinned tool definitions, on any route. A tool
+  // policy change starts a new pin, so configured removals leave the provider request.
+  const toolPolicyDigest = sha256Hex(
+    stableStringify([
+      attempt.config?.tools,
+      attempt.config?.agents?.entries?.[sessionAgentId]?.tools,
+    ]),
+  );
+  const pinTools = usesSystemPromptSeries
+    ? (tools: AnyAgentTool[]) => {
+        const pending = sessionPromptState.pendingToolSurface;
+        const pinned = prepareSessionToolSurface({
+          state: sessionPromptState,
+          routeKey: promptRouteKey,
+          toolPolicy: toolPolicyDigest,
+          entries: sessionManager.getBranch(),
+          tools,
+        });
+        if (sessionPromptState.pendingToolSurface !== pending) {
+          declarePromptToolPin(attempt);
+        }
+        return pinned;
+      }
+    : undefined;
   const state: EmbeddedAttemptSessionRuntimeState = {
     currentTurnImageFailureCount: 0,
     prePromptMessageCount: 0,
@@ -218,6 +260,7 @@ export async function prepareEmbeddedAttemptSessionRuntime(input: {
               codeModeControlsEnabledForRun,
               deferredDirectoryToolsCallable,
               effectiveTools,
+              pinTools,
               replaySafetyOptions,
               sandboxSessionKey,
               sessionAgentId,
@@ -334,6 +377,7 @@ export async function prepareEmbeddedAttemptSessionRuntime(input: {
 
   const transport = await prepareEmbeddedAttemptTransport({
     attempt,
+    contextEngineInfo: input.activeContextEngine?.info,
     assertCronRootCurrent: sessionLock.assertCronRootCurrent,
     session: activeSession,
     settingsManager,

@@ -2,6 +2,7 @@ import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
 import { expectDefined } from "openclaw/plugin-sdk/expect-runtime";
 import { resolveRequestUrl } from "openclaw/plugin-sdk/request-url";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createSpeechDirectivePolicy } from "../test-support/speech-directive-policy.test-support.js";
 import { isValidElevenLabsVoiceId } from "./shared.js";
 import { buildElevenLabsSpeechProvider } from "./speech-provider-factory.js";
 
@@ -26,16 +27,7 @@ vi.mock("openclaw/plugin-sdk/ssrf-runtime", () => ({
   ssrfPolicyFromHttpBaseUrlAllowedHostname: () => undefined,
 }));
 
-const DIRECTIVE_POLICY = {
-  enabled: true,
-  allowText: true,
-  allowProvider: true,
-  allowVoice: true,
-  allowModelId: true,
-  allowVoiceSettings: true,
-  allowNormalization: true,
-  allowSeed: true,
-};
+const DIRECTIVE_POLICY = createSpeechDirectivePolicy();
 
 const request = {
   text: "hello",
@@ -105,7 +97,6 @@ describe("elevenlabs speech provider", () => {
             : {
                 handled: true,
                 overrides: {
-                  ...currentOverrides,
                   voiceSettings: { ...currentOverrides.voiceSettings, ...expected },
                 },
               },
@@ -127,7 +118,7 @@ describe("elevenlabs speech provider", () => {
     const providerConfig = { apiKey: "   " };
     const blankRequest = { ...request, providerConfig };
 
-    expect(provider.isConfigured(blankRequest)).toBe(false);
+    expect(await provider.isConfiguredAsync?.(blankRequest)).toBe(false);
     await expect(
       provider.listVoices?.({ apiKey: "   ", providerConfig, timeoutMs: 1_000 }),
     ).rejects.toThrow("ElevenLabs API key missing");

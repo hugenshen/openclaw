@@ -35,7 +35,11 @@ vi.mock("../cli/gateway-rpc.js", async (importOriginal) => {
 
 vi.mock("../config/config.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../config/config.js")>();
-  return { ...actual, getRuntimeConfig: configMocks.getRuntimeConfig };
+  const { createTestConfigReadMocks } = await import("./test-runtime-config-helpers.js");
+  return {
+    ...actual,
+    ...createTestConfigReadMocks(configMocks, "getRuntimeConfig"),
+  };
 });
 
 import { GIT_BACKUP_PUSH_CREDENTIAL_WARNING } from "./backup-git.js";
@@ -359,7 +363,6 @@ describe("scheduled backups", () => {
         cronEnabled: false,
         log: createNoopLogger(),
         enqueueSystemEvent: vi.fn(),
-        requestHeartbeat: vi.fn(),
         runIsolatedAgentJob: runJob,
         runCommandJob: runJob,
       });

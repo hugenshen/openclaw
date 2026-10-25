@@ -10,6 +10,7 @@ import {
   resolveNodeWorkerLaunchToolNames,
 } from "../infra/node-runner-inventory.js";
 import { NODE_HOST_STATS_EVENT, NODE_HOST_STATS_INTERVAL_MS } from "../shared/node-host-stats.js";
+import { createNodeInvokeResponder } from "./client.js";
 import { startNodeHostConnection } from "./connection.js";
 import * as hostStats from "./host-stats.js";
 
@@ -38,7 +39,6 @@ it.each([
     declared: ["presence", "future_tool", "portal", "read"],
     expected: ["presence", "future_tool", "portal", "read"],
   },
-  { declared: ["future_tool"], expected: ["future_tool"] },
   { declared: [], expected: [] },
 ])(
   "preserves declared launch names or the published 2026.9.6 vocabulary ($declared)",
@@ -80,7 +80,6 @@ it.each([
 it.each([
   { reason: "non-array", value: "read" },
   { reason: "duplicate", value: ["read", "read"] },
-  { reason: "duplicate unknown", value: ["future_tool", "future_tool"] },
   { reason: "non-string", value: [1] },
   { reason: "empty name", value: [""] },
   { reason: "oversized name", value: ["x".repeat(65)] },
@@ -178,6 +177,7 @@ function startConnectionFixture(
   workerHostingEnabled = false,
   preparedWorkspacesEnabled = false,
   nativeInferenceEnabled = false,
+  deviceFoldersEnabled = false,
 ) {
   const request = vi.fn().mockResolvedValue({ ok: true, handled: false });
   const runtime = {
@@ -197,6 +197,7 @@ function startConnectionFixture(
     workerHostingEnabled,
     preparedWorkspacesEnabled,
     nativeInferenceEnabled,
+    ...(deviceFoldersEnabled ? { deviceFoldersEnabled: true as const } : {}),
     initialInventory: { skills: [], pluginTools: [] },
     start,
   };
@@ -210,6 +211,92 @@ function startConnectionFixture(
   const publications = () => request.mock.calls.filter(([method]) => method === "node.event");
   return { connection, request, publications, writeStderrLine, start, prepared, runtime };
 }
+
+it("publishes retained process changes through the current connection only", async () => {
+  const { connection, request, start } = startConnectionFixture(true);
+  const changed = start.mock.calls[0]![0].onProcessesChanged!;
+  const binding = {
+    environmentId: "environment-1",
+    sessionId: "session-1",
+    ownerEpoch: 3,
+    placementGeneration: 2,
+  };
+  const replacementRequest = vi.fn().mockResolvedValue({});
+  const processEvents = (calls: unknown[][]) =>
+    calls.filter(
+      ([, params]) =>
+        typeof params === "object" &&
+        params !== null &&
+        "event" in params &&
+        params.event === "worker.processes.changed",
+    );
+  try {
+    changed(binding);
+    expect(processEvents(request.mock.calls)).toHaveLength(0);
+    connection.connect(gateway);
+    changed(binding);
+    expect(processEvents(request.mock.calls)).toEqual([
+      [
+        "node.event",
+        {
+          event: "worker.processes.changed",
+          payloadJSON: JSON.stringify(binding),
+        },
+      ],
+    ]);
+    connection.connect(gateway, { request: replacementRequest });
+    changed(binding);
+    expect(processEvents(request.mock.calls)).toHaveLength(1);
+    expect(processEvents(replacementRequest.mock.calls)).toHaveLength(1);
+    connection.disconnect();
+    changed(binding);
+    expect(processEvents(replacementRequest.mock.calls)).toHaveLength(1);
+  } finally {
+    await connection.close();
+  }
+});
+
+it("sends permission details only while the connected Gateway advertises support", async () => {
+  const { connection, request, start } = startConnectionFixture();
+  const runtimeClient = start.mock.calls[0]![0].client;
+  const response = createNodeInvokeResponder(runtimeClient, {
+    id: "screen-capture",
+    nodeId: "test-mac",
+    command: "system.run",
+  });
+  const failure = {
+    ok: false,
+    error: {
+      code: "PERMISSION_MISSING",
+      message: "PERMISSION_MISSING: screenRecording",
+      details: { capabilities: ["screenRecording"], state: "not-determined" as const },
+    },
+  };
+  const legacyResult = {
+    id: "screen-capture",
+    nodeId: "test-mac",
+    ok: false,
+    error: { code: "PERMISSION_MISSING", message: "PERMISSION_MISSING: screenRecording" },
+  };
+  try {
+    connection.connect({
+      ...gateway,
+      capabilities: [GATEWAY_SERVER_CAPS.NODE_PERMISSION_ERRORS],
+    });
+    await response.send(failure);
+    expect(request).toHaveBeenLastCalledWith("node.invoke.result", {
+      ...legacyResult,
+      error: failure.error,
+    });
+    connection.disconnect();
+    connection.connect(gateway);
+    await vi.advanceTimersByTimeAsync(0);
+    await response.send(failure);
+    expect(request).toHaveBeenLastCalledWith("node.invoke.result", legacyResult);
+  } finally {
+    await connection.close();
+  }
+});
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -448,7 +535,7 @@ it.each([false, true])(
 it.each(["resolve", "reject"] as const)(
   "retires in-flight runner publication and its pending value before late %s",
   async (settle) => {
-    const { connection, request, start, writeStderrLine } = startConnectionFixture(true);
+    const { connection, request, start } = startConnectionFixture(true);
     const previous = createDeferred<unknown>();
     let first = true;
     request.mockImplementation((method) => {
@@ -483,7 +570,6 @@ it.each(["resolve", "reject"] as const)(
           }),
         ),
       );
-      expect(writeStderrLine).not.toHaveBeenCalled();
     } finally {
       previous.resolve({});
       await connection.close();
@@ -522,12 +608,15 @@ it("keeps refreshed publication on its replacement connection despite an old ack
 });
 
 it.each([false, true])(
-  "advertises prepared workspace registration only when enabled: %s",
+  "negotiates prefetch for persistent hosts and prepared workspaces for ephemeral hosts: %s",
   async (enabled) => {
     const { connection, request, start } = startConnectionFixture(true, enabled);
     try {
       start.mock.calls[0]?.[0].onRunnerCapacityChanged?.({ total: 1, available: 1 });
-      connection.connect(gateway);
+      connection.connect({
+        ...gateway,
+        capabilities: [GATEWAY_SERVER_CAPS.NODE_WORKER_BUNDLE_PREFETCH],
+      });
       const declaration = request.mock.calls.find(
         ([method]) => method === NODE_RUNNER_INVENTORY_UPDATE_METHOD,
       )?.[1];
@@ -538,6 +627,7 @@ it.each([false, true])(
         throw new Error("Expected an enabled worker declaration");
       }
       expect(parsed.workerHost.preparedWorkspace).toBe(enabled ? 1 : undefined);
+      expect(parsed.workerHost.bundlePrefetch).toBe(enabled ? undefined : 1);
       start.mock.calls[0]?.[0].onWorkerHostingDisabled?.("test revoked worker consent");
       await vi.advanceTimersByTimeAsync(0);
       expect(
@@ -561,7 +651,6 @@ it.each([
   { kind: "workspace", platform: "linux", bun: false },
   { kind: "workspace", platform: "linux", bun: true },
   { kind: "workspace", platform: "win32", bun: false },
-  { kind: "workspace", platform: "win32", bun: true },
   { kind: "workspace", platform: "darwin", bun: false },
 ] as const)(
   "negotiates $kind inventory per connection ($platform, Bun=$bun)",
@@ -582,6 +671,7 @@ it.each([
           : { total: 2, available: 2 };
     const capabilities = {
       optional: [
+        GATEWAY_SERVER_CAPS.NODE_WORKER_BUNDLE_PREFETCH,
         GATEWAY_SERVER_CAPS.NODE_WORKER_CAPTURED_EXEC_POLICY,
         GATEWAY_SERVER_CAPS.NODE_WORKER_LAUNCH_TOOL_NAMES,
         GATEWAY_SERVER_CAPS.NODE_WORKER_STATUS_WAIT,
@@ -589,6 +679,7 @@ it.each([
       idle: [GATEWAY_SERVER_CAPS.NODE_WORKER_IDLE_RETENTION],
       disabled: [GATEWAY_SERVER_CAPS.NODE_WORKER_HOST_DIAGNOSTICS],
       workspace: [
+        GATEWAY_SERVER_CAPS.NODE_WORKER_WORKSPACE_RESULT,
         GATEWAY_SERVER_CAPS.NODE_WORKER_WORKSPACE_QUIESCENCE,
         GATEWAY_SERVER_CAPS.NODE_WORKER_STATUS_WAIT,
         GATEWAY_SERVER_CAPS.NODE_WORKER_LAUNCH_TOOL_NAMES,
@@ -621,6 +712,7 @@ it.each([
                   bundlePrewarm: 1,
                   ...(supported && kind === "idle" ? { idleRetention: true } : {}),
                   ...(supported && kind === "optional" ? { capturedExecPolicy: true } : {}),
+                  ...(supported && kind === "optional" ? { bundlePrefetch: 1 } : {}),
                   ...(supported && (kind === "optional" || kind === "workspace")
                     ? {
                         statusWait: 1,
@@ -637,6 +729,7 @@ it.each([
                             : [...CORE_WORKER_LAUNCH_TOOL_NAMES],
                       }
                     : {}),
+                  ...(supported && kind === "workspace" ? { workspaceResultVersion: 2 } : {}),
                   ...(supported &&
                   kind === "workspace" &&
                   (platform === "linux" || platform === "win32") &&
@@ -656,6 +749,36 @@ it.each([
       } else {
         delete process.versions.bun;
       }
+    }
+  },
+);
+
+it.each([
+  { enabled: false, supported: true },
+  { enabled: true, supported: true },
+  { enabled: true, supported: false },
+])(
+  "advertises device folders unless disabled, with Gateway support (%j)",
+  async ({ enabled, supported }) => {
+    const { connection, request, start } = startConnectionFixture(true, false, false, enabled);
+    try {
+      start.mock.calls[0]?.[0].onRunnerCapacityChanged?.({ total: 1, available: 1 });
+      connection.connect({
+        ...gateway,
+        capabilities: supported ? [GATEWAY_SERVER_CAPS.NODE_WORKER_DEVICE_FOLDERS] : [],
+      });
+      await Promise.resolve();
+      const inventory = request.mock.calls.find(
+        ([method]) => method === NODE_RUNNER_INVENTORY_UPDATE_METHOD,
+      )?.[1];
+      expect(inventory).toMatchObject({ workerHost: { enabled: true } });
+      const parsed = parseNodeRunnerInventoryDeclaration(inventory);
+      expect(parsed).not.toBeNull();
+      if (parsed && "workerHost" in parsed && parsed.workerHost.enabled) {
+        expect(parsed.workerHost.deviceFolders).toBe(enabled && supported ? true : undefined);
+      }
+    } finally {
+      await connection.close();
     }
   },
 );

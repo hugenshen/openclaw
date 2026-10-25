@@ -1,5 +1,5 @@
 {
-  "startupJsGzipBytes": 450000,
-  "reason": "Solid transition allowance: Peter approved relaxing the startup budget while Lit and Solid coexist (2026-10-11). Main measured 422,013 B gzip at 9fec51a0; the 450,000 B ceiling leaves headroom for remaining ports. Restore to 374,285 B or lower after the Lit sweep (the Solid shell saves about 18 KB). Retain the 64 B build-variance and 512 B growth allowances and all request, CSS, asset, and route budgets except the startup CSS request count (2 during the transition).",
-  "updatedAt": "2026-10-11"
+  "startupJsGzipBytes": 271935,
+  "reason": "Same-host uncached 8937cb4 to 92174fc builds measure startup 271947 to 271935 B gzip (-12 B), Chat +1451 B and New Session +29 B (within build variance), with unchanged CSS bytes and JS/CSS request counts. The lazy highlighting worker cuts 5000-line code/diff CPU by 18-70%; avoiding leaf-subtree table scans cuts dense-code CPU median/p95 by 65.9%/64.3%. Record the measured integrated startup head.",
+  "updatedAt": "2026-10-25"
 }

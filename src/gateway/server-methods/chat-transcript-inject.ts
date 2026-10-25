@@ -1,3 +1,4 @@
+import type { HumanMention } from "../../../packages/gateway-protocol/src/index.js";
 import type { SessionManager } from "../../agents/sessions/session-manager.js";
 import { makeZeroUsageSnapshot } from "../../agents/usage.js";
 import {
@@ -31,6 +32,8 @@ export type GatewayInjectedTranscriptAppendResult = {
   ok: boolean;
   messageId?: string;
   message?: Record<string, unknown>;
+  /** Set when the idempotency key matched an existing transcript message. */
+  replayed?: true;
   /** Set when the commit predicate declined the append; not an error. */
   skipped?: boolean;
   error?: string;
@@ -79,6 +82,12 @@ export async function appendInjectedAssistantMessageToTranscript(params: {
   abortMeta?: GatewayInjectedAbortMeta;
   ttsSupplement?: GatewayInjectedTtsSupplementMarker;
   contextFreeCommand?: true;
+  /** Trusted Gateway selections bound to UTF-16 offsets in `message`; never client input. */
+  humanMentions?: readonly HumanMention[];
+  /** Host-authored text kept as written; model-output delivery directives are not parsed. */
+  literal?: true;
+  /** Caller authority rechecked at the durable transcript commit. */
+  assertCurrent?: () => void;
   config?: OpenClawConfig;
   onMessageCommitted?: SessionTranscriptTurnPersistOptions["onMessageCommitted"];
 }): Promise<GatewayInjectedTranscriptAppendResult> {
@@ -95,28 +104,48 @@ export async function appendInjectedAssistantMessageToTranscript(params: {
     role: "assistant",
     content: resolvedContent.map((block) => Object.assign({}, block)),
   };
-  const preparedDisplayMessage = applyAssistantDeliveryDirectives(displayMessage);
-  const displayContent = preparedDisplayMessage.content;
-  const canonicalContent = retainAssistantModelContent(displayContent);
-  const rawDeliveryFacts = preparedDisplayMessage.openclawDelivery;
-  const messageBody: AppendMessageArg & Record<string, unknown> = applyAssistantDeliveryDirectives({
+  const displayContent = params.literal
+    ? displayMessage.content
+    : applyAssistantDeliveryDirectives(displayMessage).content;
+  const first = displayContent[0];
+  if (
+    params.humanMentions?.length &&
+    (displayContent.length !== 1 || first?.type !== "text" || first.text !== params.message)
+  ) {
+    // Mention offsets are bound to the exact displayed bytes.
+    return { ok: false, error: "mentioned message text must be plain displayed text" };
+  }
+  const openclawMeta = {
+    ...(params.contextFreeCommand === true ? { contextFreeCommand: true } : {}),
+    ...(params.humanMentions?.length
+      ? { humanMentions: params.humanMentions.map((mention) => ({ ...mention })) }
+      : {}),
+  };
+  const messageBody: AppendMessageArg & Record<string, unknown> = {
     role: "assistant",
-    content: canonicalContent,
+    content: retainAssistantModelContent(displayContent),
     [ASSISTANT_DISPLAY_CONTENT_FIELD]: displayContent,
     timestamp: now,
     // Runtime projections retain their terminal state; host-authored partials
     // keep their replayable default and carry cancellation in openclawAbort.
     stopReason: params.stopReason ?? "stop",
-    usage: makeZeroUsageSnapshot(),
+    usage: {
+      ...makeZeroUsageSnapshot(),
+      ...(params.abortMeta
+        ? {
+            usageReport: { state: "unavailable" } as const,
+            contextUsage: { state: "unavailable" } as const,
+          }
+        : {}),
+    },
     // Make these explicit so downstream tooling never treats this as model output.
     api: "openai-responses",
     provider: "openclaw",
     model: "gateway-injected",
     ...(params.idempotencyKey ? { idempotencyKey: params.idempotencyKey } : {}),
     ...(params.ttsSupplement ? { openclawTtsSupplement: params.ttsSupplement } : {}),
-    ...(params.contextFreeCommand === true
-      ? { excludeFromContext: true, __openclaw: { contextFreeCommand: true } }
-      : {}),
+    ...(params.contextFreeCommand === true ? { excludeFromContext: true } : {}),
+    ...(Object.keys(openclawMeta).length ? { __openclaw: openclawMeta } : {}),
     ...(params.abortMeta
       ? {
           openclawAbort: {
@@ -126,9 +155,9 @@ export async function appendInjectedAssistantMessageToTranscript(params: {
           },
         }
       : {}),
-  });
-  if (rawDeliveryFacts && messageBody.openclawDelivery === undefined) {
-    messageBody.openclawDelivery = rawDeliveryFacts;
+  };
+  if (displayMessage.openclawDelivery) {
+    messageBody.openclawDelivery = displayMessage.openclawDelivery;
   }
 
   const scope = {
@@ -160,6 +189,7 @@ export async function appendInjectedAssistantMessageToTranscript(params: {
       };
     }
     const turn = await persistSessionTranscriptTurn(scope, {
+      ...(params.assertCurrent ? { assertCurrent: params.assertCurrent } : {}),
       expectedSessionId: params.expectedSessionId,
       expectedLifecycleRevision: params.expectedLifecycleRevision,
       updateMode: "inline",
@@ -200,6 +230,7 @@ export async function appendInjectedAssistantMessageToTranscript(params: {
       ok: true,
       messageId: appended.messageId,
       message: projectAssistantDisplayContent(appended.message as Record<string, unknown>),
+      ...(appended.appended ? {} : { replayed: true as const }),
     };
   } catch (err) {
     return { ok: false, error: formatErrorMessage(err) };

@@ -10,17 +10,17 @@ import type {
 import { readCronJobNamesInDatabase } from "../cron/store/job-name.kernel.js";
 import { resolveCronJobsStorePath } from "../cron/store/paths.js";
 import { withExistingOpenClawStateDatabaseReadOnly } from "../state/openclaw-state-db-readonly.js";
-import { getUserProfileDisplays } from "../state/user-profile-list.js";
+import { getUserProfileDisplaysNative } from "../state/user-profile-list.native.js";
 import { createCurrentUserProfileMessageProjector } from "./chat-display-projection.core.js";
 import {
   projectForwardedMessages,
   readForwardedCronJobIds,
 } from "./chat-display-projection.history.js";
+import { projectChatHistoryWithReplies } from "./chat-history-reply-messages.js";
 import { resolveCurrentUserProfileDisplay } from "./current-user-profile-display.js";
-import { projectChatHistoryWithReplies } from "./server-methods/chat-history-reply-messages.js";
 import type { PreparedSessionHistoryReadTarget } from "./session-history-read.types.js";
 import { createReadonlySessionHistoryReader } from "./session-history-readonly-reader.js";
-import { resolveGatewaySessionStoreReadSources } from "./session-utils-store-sources.js";
+import { resolveGatewaySessionStoreReadSources } from "./session-utils-store-candidates.js";
 
 /** Dispatch only inside the history worker's admitted database lifetime. */
 export async function readSessionHistoryRequest(
@@ -39,6 +39,18 @@ export async function readSessionHistoryRequest(
     deferProfileDisplay: true,
     resolveCronJobName: () => undefined,
   };
+  if (request.kind === "recent-usage") {
+    return {
+      kind: "recent-usage",
+      result: options.readers.readRecentUsage(request.params.maxBytes),
+    };
+  }
+  if (request.kind === "history-event-page") {
+    return {
+      kind: "history-event-page",
+      result: options.readers.readHistoryEventPage(request.params.options),
+    };
+  }
   if (request.kind === "active-accounting") {
     return {
       kind: "active-accounting",
@@ -49,6 +61,12 @@ export async function readSessionHistoryRequest(
     return {
       kind: "bounded-tail",
       result: options.readers.readBoundedMessageTail(request.params.options),
+    };
+  }
+  if (request.kind === "recent-text") {
+    return {
+      kind: "recent-text",
+      result: options.readers.readRecentConversationText(request.params.options),
     };
   }
   if (request.kind === "summary") {
@@ -195,10 +213,8 @@ export async function readSessionHistoryRequest(
     };
   }
   if (request.kind === "rpc") {
-    const { readChatHistoryPageKernel } =
-      await import("./server-methods/chat-history-page-kernel.js");
-    const { encodeChatHistoryResponsePage } =
-      await import("./server-methods/chat-history-response-page.js");
+    const { readChatHistoryPageKernel } = await import("./chat-history-page-kernel.js");
+    const { encodeChatHistoryResponsePage } = await import("./chat-history-response-page.js");
     const cli = getCliSessionBinding(request.params.entry, "claude-cli")?.sessionId
       ? await (
           await import("./cli-session-history.js")
@@ -233,10 +249,10 @@ export async function readSessionHistoryRequest(
               state,
             )
           : undefined;
-        let profiles: ReturnType<typeof getUserProfileDisplays> | undefined;
+        let profiles: ReturnType<typeof getUserProfileDisplaysNative> | undefined;
         const project = createCurrentUserProfileMessageProjector((id) =>
           resolveCurrentUserProfileDisplay(id, (senderId) =>
-            (profiles ??= getUserProfileDisplays(profileIds, state)).get(senderId),
+            (profiles ??= getUserProfileDisplaysNative(profileIds, state)).get(senderId),
           ),
         );
         return projectForwardedMessages(displayMessages, (jobId) =>

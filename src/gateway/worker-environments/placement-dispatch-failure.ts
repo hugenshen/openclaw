@@ -63,7 +63,6 @@ export type WorkerDispatchPlacementStore = Pick<
   | "beginWorkspaceReconciliation"
   | "abortWorkspaceReconciliation"
   | "listWorkspaceReconciliationOwners"
-  | "list"
   | "listPendingWorkspaceResultsAsync"
   | "markWorkspaceResultPending"
   | "handoffWorkspaceResultRecovery"
@@ -101,6 +100,7 @@ export type WorkerDispatchEnvironmentService = Pick<
   | "schedulePreparedRefill"
   | "createWithRequest"
   | "destroy"
+  | "reclaim"
   | "get"
   | "fenceWorkerTurnForRecovery"
   | "reconcileEnvironment"
@@ -108,7 +108,8 @@ export type WorkerDispatchEnvironmentService = Pick<
   | "startTunnel"
   | "stopTunnel"
   | "supportsProviderExecutionMode"
->;
+> &
+  Partial<Pick<WorkerEnvironmentService, "runProjectLifecycleCommand">>;
 
 export type WorkerActivationBarrier = (params: {
   sessionId: string;
@@ -239,7 +240,15 @@ export function createPlacementFailureActions(deps: {
           ownerEpoch: params.ownerEpoch,
         })
       : [];
-    return updateFailure(params.placement, params.primaryError, teardownErrors);
+    try {
+      return await updateFailure(params.placement, params.primaryError, teardownErrors);
+    } catch (recordError) {
+      throw new AggregateError(
+        [params.primaryError, recordError],
+        `Worker dispatch failed: ${boundedError(params.primaryError)}; failure recording: ${boundedError(recordError)}`,
+        { cause: recordError },
+      );
+    }
   };
 
   const cancelProvisioning = (

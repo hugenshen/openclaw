@@ -29,12 +29,14 @@ export type ResolvedMemorySearchConfig = Omit<
   | "local"
   | "outputDimensionality"
   | "queryInputType"
+  | "queryInstruction"
   | "remote"
   | "store"
   | "sync"
 > & {
   inputType?: string;
   queryInputType?: string;
+  queryInstruction?: string;
   documentInputType?: string;
   outputDimensionality?: number;
   cache: Omit<ProducedMemorySearchConfig["cache"], "maxEntries"> & { maxEntries?: number };
@@ -69,6 +71,11 @@ const DEFAULT_CACHE_ENABLED = true;
 // evicts rows the next sync needs and forces paid re-embedding.
 const DEFAULT_CACHE_MAX_ENTRIES = 50_000;
 const DEFAULT_MEMORY_EMBEDDING_PROVIDER = "openai";
+
+export function resolveMemorySearchProviderId(provider?: string): string {
+  const configured = provider?.trim();
+  return configured && configured !== "auto" ? configured : DEFAULT_MEMORY_EMBEDDING_PROVIDER;
+}
 
 function getConfiguredMemoryEmbeddingProvider(providerId: string, cfg: OpenClawConfig) {
   // `none` is the built-in FTS-only sentinel, never a plugin capability.
@@ -134,11 +141,7 @@ function produceMemorySearchConfig(cfg: OpenClawConfig, agentId: string) {
   }
   const defaults = cfg.memory?.search;
   const overrides = resolveAgentConfig(cfg, agentId)?.memory?.search;
-  const rawProvider = overrides?.provider ?? defaults?.provider;
-  const provider =
-    rawProvider?.trim() === "auto"
-      ? DEFAULT_MEMORY_EMBEDDING_PROVIDER
-      : rawProvider?.trim() || DEFAULT_MEMORY_EMBEDDING_PROVIDER;
+  const provider = resolveMemorySearchProviderId(overrides?.provider ?? defaults?.provider);
   const primaryAdapter = getConfiguredMemoryEmbeddingProvider(provider, cfg);
   const defaultRemote = defaults?.remote;
   const overrideRemote = overrides?.remote;
@@ -189,6 +192,7 @@ function produceMemorySearchConfig(cfg: OpenClawConfig, agentId: string) {
     model,
     inputType,
     queryInputType,
+    queryInstruction: (overrides?.queryInstruction ?? defaults?.queryInstruction) || undefined,
     documentInputType,
     outputDimensionality,
     local: { modelPath: overrides?.local?.modelPath ?? defaults?.local?.modelPath },
